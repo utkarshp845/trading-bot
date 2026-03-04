@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 from dotenv import load_dotenv
+from zoneinfo import ZoneInfo
 
 from bot.io_log import setup_logger
 from bot.store import (
@@ -24,8 +25,29 @@ from bot.broker_alpaca import (
     get_order,
 )
 
+
 def utc_iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def is_market_open_now_et() -> bool:
+    """
+    Regular US equity session: 09:30–16:00 America/New_York, Mon–Fri.
+    Notes:
+      - This does NOT account for US market holidays or early closes.
+      - Week-1 paper trading: good enough. We'll add a proper calendar later.
+    """
+    et = ZoneInfo("America/New_York")
+    now = datetime.now(et)
+
+    # Mon=0 ... Sun=6
+    if now.weekday() >= 5:
+        return False
+
+    open_time = now.replace(hour=9, minute=30, second=0, microsecond=0)
+    close_time = now.replace(hour=16, minute=0, second=0, microsecond=0)
+    return open_time <= now < close_time
+
 
 def bars_since(last_trade_ts: str | None, bars: pd.DataFrame) -> int | None:
     if not last_trade_ts or bars.empty:
@@ -37,6 +59,7 @@ def bars_since(last_trade_ts: str | None, bars: pd.DataFrame) -> int | None:
     # count bars strictly after last_trade
     return int((bars.index > last_trade).sum())
 
+
 def append_csv(path: str, header: list[str], row: list):
     exists = os.path.exists(path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -44,6 +67,7 @@ def append_csv(path: str, header: list[str], row: list):
         if not exists:
             f.write(",".join(header) + "\n")
         f.write(",".join("" if v is None else str(v) for v in row) + "\n")
+
 
 def main():
     load_dotenv()
@@ -67,11 +91,30 @@ def main():
     ts = utc_iso_now()
     logger.info(f"Run start ts={ts} symbol={symbol} tf={timeframe_minutes}m qty={qty}")
 
+    # Alpaca clients
     trading, data = make_clients()
 
+    # DB + state
     conn = connect()
     init_db(conn)
     state = get_state(conn)
+
+    # === Market-hours guard ===
+    if not is_market_open_now_et():
+        note = "market_closed"
+        logger.info("Market closed (ET). Recording HOLD and exiting.")
+        equity, cash = get_account_snapshot(trading)
+        pos_qty = get_position_qty(trading, symbol)
+
+        record_run(conn, ts, symbol, None, None, None, "HOLD", pos_qty, equity, cash, note)
+
+        append_csv(
+            "/app/logs/equity.csv",
+            ["ts_utc", "symbol", "equity", "cash", "position_qty", "last_price"],
+            [ts, symbol, equity, cash, pos_qty, None]
+        )
+        logger.info("Run complete.")
+        return
 
     # pull bars
     bars = get_recent_bars(data, symbol, timeframe_minutes, limit=220)
@@ -81,6 +124,13 @@ def main():
         equity, cash = get_account_snapshot(trading)
         pos_qty = get_position_qty(trading, symbol)
         record_run(conn, ts, symbol, None, None, None, "HOLD", pos_qty, equity, cash, note)
+
+        append_csv(
+            "/app/logs/equity.csv",
+            ["ts_utc", "symbol", "equity", "cash", "position_qty", "last_price"],
+            [ts, symbol, equity, cash, pos_qty, None]
+        )
+        logger.info("Run complete.")
         return
 
     # compute indicators & signal
@@ -173,6 +223,7 @@ def main():
         logger.info(f"Order submitted order_id={order_id} status={status}")
 
     logger.info("Run complete.")
+
 
 if __name__ == "__main__":
     main()
