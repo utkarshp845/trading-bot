@@ -9,7 +9,8 @@ from bot.io_log import setup_logger
 from bot.store import (
     connect, init_db, get_state,
     record_run, record_order,
-    set_last_trade, increment_trades_today
+    set_last_trade, increment_trades_today,
+    get_position_state, upsert_position_state, clear_position_state
 )
 from bot.strategy_ma import StrategyConfig, compute_indicators, generate_signal
 from bot.broker_alpaca import (
@@ -24,16 +25,9 @@ def utc_iso_now() -> str:
 
 
 def is_market_open_now_et() -> bool:
-    """
-    Regular US equity session: 09:30–16:00 America/New_York, Mon–Fri.
-    Notes:
-      - This does NOT account for US market holidays or early closes.
-      - Fine for a simple first trading bot.
-    """
     et = ZoneInfo("America/New_York")
     now = datetime.now(et)
 
-    # Mon=0 ... Sun=6
     if now.weekday() >= 5:
         return False
 
@@ -49,9 +43,17 @@ def bars_since(last_trade_ts: str | None, bars: pd.DataFrame) -> int | None:
         last_trade = datetime.fromisoformat(last_trade_ts)
     except Exception:
         return None
-
-    # count bars strictly after last_trade
     return int((bars.index > last_trade).sum())
+
+
+def bars_in_trade(entry_ts: str | None, bars: pd.DataFrame) -> int | None:
+    if not entry_ts or bars.empty:
+        return None
+    try:
+        entry_dt = datetime.fromisoformat(entry_ts)
+    except Exception:
+        return None
+    return int((bars.index > entry_dt).sum())
 
 
 def append_csv(path: str, header: list[str], row: list):
@@ -65,10 +67,8 @@ def append_csv(path: str, header: list[str], row: list):
 
 def main():
     load_dotenv()
-
     logger = setup_logger()
 
-    # required envs
     for k in ("ALPACA_API_KEY", "ALPACA_SECRET_KEY"):
         if not os.getenv(k):
             raise RuntimeError(f"Missing env var: {k}")
@@ -79,21 +79,31 @@ def main():
 
     sma_fast = int(os.getenv("SMA_FAST", "20"))
     sma_slow = int(os.getenv("SMA_SLOW", "50"))
+
+    adx_period = int(os.getenv("ADX_PERIOD", "14"))
+    adx_threshold = float(os.getenv("ADX_THRESHOLD", "25"))
+
+    atr_period = int(os.getenv("ATR_PERIOD", "14"))
+    atr_max_pct = float(os.getenv("ATR_MAX_PCT", "0.0035"))
+
+    volume_ma_period = int(os.getenv("VOLUME_MA_PERIOD", "20"))
+
+    trail_atr_multiplier = float(os.getenv("TRAIL_ATR_MULTIPLIER", "1.5"))
+    max_bars_in_trade = int(os.getenv("MAX_BARS_IN_TRADE", "12"))
+
     cooldown_bars = int(os.getenv("COOLDOWN_BARS", "2"))
     max_trades_per_day = int(os.getenv("MAX_TRADES_PER_DAY", "5"))
 
     ts = utc_iso_now()
     logger.info(f"Run start ts={ts} symbol={symbol} tf={timeframe_minutes}m qty={qty}")
 
-    # Alpaca clients
     trading, data = make_clients()
 
-    # DB + state
     conn = connect()
     init_db(conn)
     state = get_state(conn)
+    pos_state = get_position_state(conn, symbol)
 
-    # Market-hours guard
     if not is_market_open_now_et():
         note = "market_closed"
         logger.info("Market closed (ET). Recording HOLD and exiting.")
@@ -101,7 +111,6 @@ def main():
         pos_qty = get_position_qty(trading, symbol)
 
         record_run(conn, ts, symbol, None, None, None, "HOLD", pos_qty, equity, cash, note)
-
         append_csv(
             "/app/logs/equity.csv",
             ["ts_utc", "symbol", "equity", "cash", "position_qty", "last_price"],
@@ -110,7 +119,6 @@ def main():
         logger.info("Run complete.")
         return
 
-    # Pull bars
     bars = get_recent_bars(data, symbol, timeframe_minutes, limit=220)
     if bars.empty:
         note = "no_bars"
@@ -119,7 +127,6 @@ def main():
         pos_qty = get_position_qty(trading, symbol)
 
         record_run(conn, ts, symbol, None, None, None, "HOLD", pos_qty, equity, cash, note)
-
         append_csv(
             "/app/logs/equity.csv",
             ["ts_utc", "symbol", "equity", "cash", "position_qty", "last_price"],
@@ -128,25 +135,96 @@ def main():
         logger.info("Run complete.")
         return
 
-    # Compute indicators & signal
-    cfg = StrategyConfig(sma_fast=sma_fast, sma_slow=sma_slow)
+    cfg = StrategyConfig(
+        sma_fast=sma_fast,
+        sma_slow=sma_slow,
+        adx_period=adx_period,
+        adx_threshold=adx_threshold,
+        atr_period=atr_period,
+        atr_max_pct=atr_max_pct,
+        volume_ma_period=volume_ma_period,
+        trail_atr_multiplier=trail_atr_multiplier,
+        max_bars_in_trade=max_bars_in_trade,
+    )
+
     bars2 = compute_indicators(bars, cfg)
-    signal, last_price, v_fast, v_slow = generate_signal(bars2)
+    signal, metrics, reasons = generate_signal(bars2, cfg)
+
+    last_price = metrics.get("price")
+    v_fast = metrics.get("sma_fast")
+    v_slow = metrics.get("sma_slow")
+    v_adx = metrics.get("adx")
+    v_atr = metrics.get("atr")
+    v_atr_pct = metrics.get("atr_pct")
+    v_volume = metrics.get("volume")
+    v_volume_ma = metrics.get("volume_ma")
 
     pos_qty = get_position_qty(trading, symbol)
     equity, cash = get_account_snapshot(trading)
 
-    # Convert signal into desired action based on current position
+    # Bootstrap position state if already long but no state exists
+    if pos_qty > 0 and pos_state.entry_price is None:
+        bootstrap_price = last_price
+        bootstrap_ts = ts
+        bootstrap_high = last_price
+        upsert_position_state(conn, symbol, bootstrap_price, bootstrap_ts, bootstrap_high)
+        pos_state = get_position_state(conn, symbol)
+        logger.info("Bootstrapped position state for existing position.")
+
+    # Keep highest price updated while long
+    if pos_qty > 0 and last_price is not None:
+        current_high = pos_state.highest_price if pos_state.highest_price is not None else last_price
+        new_high = max(float(current_high), float(last_price))
+        upsert_position_state(conn, symbol, pos_state.entry_price, pos_state.entry_ts, new_high)
+        pos_state = get_position_state(conn, symbol)
+
     desired_action = "HOLD"
-    if signal == "BUY" and pos_qty <= 0:
-        desired_action = "BUY"
-    elif signal == "SELL" and pos_qty > 0:
-        desired_action = "SELL"
+    note_parts = list(reasons)
+
+    # Entry if flat
+    if pos_qty <= 0:
+        if signal == "BUY":
+            desired_action = "BUY"
+
+    # Exit logic if long
+    elif pos_qty > 0:
+        exit_reason = None
+
+        # trailing stop
+        if (
+            last_price is not None
+            and v_atr is not None
+            and pos_state.highest_price is not None
+        ):
+            trailing_stop = float(pos_state.highest_price) - (trail_atr_multiplier * float(v_atr))
+            if float(last_price) < trailing_stop:
+                desired_action = "SELL"
+                exit_reason = f"trailing_stop_hit({last_price}<{trailing_stop})"
+
+        # time stop
+        if desired_action == "HOLD":
+            trade_bars = bars_in_trade(pos_state.entry_ts, bars2)
+            if (
+                trade_bars is not None
+                and trade_bars >= max_bars_in_trade
+                and pos_state.entry_price is not None
+                and last_price is not None
+                and float(last_price) <= float(pos_state.entry_price)
+            ):
+                desired_action = "SELL"
+                exit_reason = f"time_stop_hit({trade_bars}>={max_bars_in_trade})"
+
+        # crossover exit
+        if desired_action == "HOLD" and signal == "SELL":
+            desired_action = "SELL"
+            exit_reason = "trend_reversal"
+
+        if exit_reason:
+            note_parts.append(exit_reason)
 
     action = desired_action
-    note_parts = []
 
-    # Apply guardrails ONLY if we're actually about to trade
+    # Apply guardrails only for actual trades
     if desired_action in ("BUY", "SELL"):
         if state.trades_today >= max_trades_per_day:
             action = "HOLD"
@@ -156,18 +234,16 @@ def main():
         if since is not None and since < cooldown_bars:
             action = "HOLD"
             note_parts.append(f"cooldown({since}<{cooldown_bars})")
-    else:
-        since = None  # useful for debugging consistency
 
     note = ";".join(note_parts) if note_parts else None
 
     logger.info(
         f"price={last_price} sma_fast={v_fast} sma_slow={v_slow} "
+        f"adx={v_adx} atr={v_atr} atr_pct={v_atr_pct} volume={v_volume} volume_ma={v_volume_ma} "
         f"signal={signal} pos_qty={pos_qty} desired_action={desired_action} "
         f"action={action} trades_today={state.trades_today} note={note}"
     )
 
-    # Execute
     order_info = None
     executed_qty = None
 
@@ -175,35 +251,35 @@ def main():
         order_info = place_market_order(trading, symbol, "buy", qty)
         executed_qty = qty
 
+        # optimistic state update for paper-trading simplicity
+        if last_price is not None:
+            upsert_position_state(conn, symbol, float(last_price), ts, float(last_price))
+
     elif action == "SELL":
-        # sell existing qty (rounding down to int shares for simplicity)
         sell_qty = int(float(pos_qty))
         if sell_qty > 0:
             order_info = place_market_order(trading, symbol, "sell", sell_qty)
             executed_qty = sell_qty
+            clear_position_state(conn, symbol)
         else:
             logger.info("Position qty not positive; skipping sell.")
             action = "HOLD"
             note = "sell_skipped_no_position" if note is None else f"{note};sell_skipped_no_position"
 
-    # Record run
     record_run(conn, ts, symbol, last_price, v_fast, v_slow, action, pos_qty, equity, cash, note)
 
-    # Record equity curve
     append_csv(
         "/app/logs/equity.csv",
         ["ts_utc", "symbol", "equity", "cash", "position_qty", "last_price"],
         [ts, symbol, equity, cash, pos_qty, last_price]
     )
 
-    # Record order if one was submitted
     if order_info is not None:
         order_id = str(order_info.id)
         status = None
         filled_avg = None
         filled_qty = None
 
-        # Quick status check (best-effort)
         try:
             o = get_order(trading, order_id)
             status = getattr(o, "status", None)
