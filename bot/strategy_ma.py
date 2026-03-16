@@ -113,7 +113,7 @@ def generate_signal(df: pd.DataFrame, cfg: StrategyConfig) -> tuple[str, dict, l
     trend_down = metrics["sma_fast"] < metrics["sma_slow"]
     adx_ok = metrics["adx"] > cfg.adx_threshold
     atr_ok = metrics["atr_pct"] <= cfg.atr_max_pct
-    volume_ok = metrics["volume"] > metrics["volume_ma"]
+    volume_ok = metrics["volume"] > (0.8 * metrics["volume_ma"])
     time_window_ok = metrics["time_window_ok"]
 
     if not trend_up:

@@ -229,6 +229,11 @@ def main():
         if state.trades_today >= max_trades_per_day:
             action = "HOLD"
             note_parts.append("max_trades_hit")
+    
+    if desired_action == "BUY":
+        if states.trades_today >= max_trades_per_day:
+            action = "HOLD"
+            note_parts.append("max_trades_hit")
 
         since = bars_since(state.last_trade_ts, bars2)
         if since is not None and since < cooldown_bars:
