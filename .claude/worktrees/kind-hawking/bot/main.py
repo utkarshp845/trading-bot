@@ -7,25 +7,16 @@ from zoneinfo import ZoneInfo
 
 from bot.io_log import setup_logger
 from bot.store import (
-    connect,
-    init_db,
-    get_state,
-    record_run,
-    record_order,
-    set_last_trade,
-    increment_trades_today,
-    get_position_state,
-    upsert_position_state,
-    clear_position_state,
+    connect, init_db, get_state,
+    record_run, record_order,
+    set_last_trade, increment_trades_today,
+    get_position_state, upsert_position_state, clear_position_state
 )
 from bot.strategy_ma import StrategyConfig, compute_indicators, generate_signal
 from bot.broker_alpaca import (
-    make_clients,
-    get_recent_bars,
-    get_position_qty,
-    get_account_snapshot,
-    place_market_order,
-    get_order,
+    make_clients, get_recent_bars,
+    get_position_qty, get_account_snapshot,
+    place_market_order, get_order
 )
 
 
@@ -37,7 +28,6 @@ def is_market_open_now_et() -> bool:
     et = ZoneInfo("America/New_York")
     now = datetime.now(et)
 
-    # Mon=0 ... Sun=6
     if now.weekday() >= 5:
         return False
 
@@ -91,10 +81,10 @@ def main():
     sma_slow = int(os.getenv("SMA_SLOW", "50"))
 
     adx_period = int(os.getenv("ADX_PERIOD", "14"))
-    adx_threshold = float(os.getenv("ADX_THRESHOLD", "20"))
+    adx_threshold = float(os.getenv("ADX_THRESHOLD", "25"))
 
     atr_period = int(os.getenv("ATR_PERIOD", "14"))
-    atr_max_pct = float(os.getenv("ATR_MAX_PCT", "0.0045"))
+    atr_max_pct = float(os.getenv("ATR_MAX_PCT", "0.0035"))
 
     volume_ma_period = int(os.getenv("VOLUME_MA_PERIOD", "20"))
 
@@ -124,7 +114,7 @@ def main():
         append_csv(
             "/app/logs/equity.csv",
             ["ts_utc", "symbol", "equity", "cash", "position_qty", "last_price"],
-            [ts, symbol, equity, cash, pos_qty, None],
+            [ts, symbol, equity, cash, pos_qty, None]
         )
         logger.info("Run complete.")
         return
@@ -140,7 +130,7 @@ def main():
         append_csv(
             "/app/logs/equity.csv",
             ["ts_utc", "symbol", "equity", "cash", "position_qty", "last_price"],
-            [ts, symbol, equity, cash, pos_qty, None],
+            [ts, symbol, equity, cash, pos_qty, None]
         )
         logger.info("Run complete.")
         return
@@ -172,79 +162,35 @@ def main():
     pos_qty = get_position_qty(trading, symbol)
     equity, cash = get_account_snapshot(trading)
 
-    # Bootstrap DB position state from broker state if needed
-    if pos_qty != 0 and pos_state.entry_price is None:
+    # Bootstrap position state if already long but no state exists
+    if pos_qty > 0 and pos_state.entry_price is None:
         bootstrap_price = last_price
         bootstrap_ts = ts
+        bootstrap_high = last_price
+        upsert_position_state(conn, symbol, bootstrap_price, bootstrap_ts, bootstrap_high)
+        pos_state = get_position_state(conn, symbol)
+        logger.info("Bootstrapped position state for existing position.")
 
-        if bootstrap_price is not None:
-            if pos_qty > 0:
-                upsert_position_state(
-                    conn,
-                    symbol,
-                    "long",
-                    float(bootstrap_price),
-                    bootstrap_ts,
-                    float(bootstrap_price),
-                    None,
-                )
-            elif pos_qty < 0:
-                upsert_position_state(
-                    conn,
-                    symbol,
-                    "short",
-                    float(bootstrap_price),
-                    bootstrap_ts,
-                    None,
-                    float(bootstrap_price),
-                )
-            pos_state = get_position_state(conn, symbol)
-            logger.info("Bootstrapped position state for existing position.")
-
-    # Update trailing extremes while in a position
+    # Keep highest price updated while long
     if pos_qty > 0 and last_price is not None:
         current_high = pos_state.highest_price if pos_state.highest_price is not None else last_price
         new_high = max(float(current_high), float(last_price))
-        upsert_position_state(
-            conn,
-            symbol,
-            "long",
-            pos_state.entry_price,
-            pos_state.entry_ts,
-            new_high,
-            pos_state.lowest_price,
-        )
-        pos_state = get_position_state(conn, symbol)
-
-    elif pos_qty < 0 and last_price is not None:
-        current_low = pos_state.lowest_price if pos_state.lowest_price is not None else last_price
-        new_low = min(float(current_low), float(last_price))
-        upsert_position_state(
-            conn,
-            symbol,
-            "short",
-            pos_state.entry_price,
-            pos_state.entry_ts,
-            pos_state.highest_price,
-            new_low,
-        )
+        upsert_position_state(conn, symbol, pos_state.entry_price, pos_state.entry_ts, new_high)
         pos_state = get_position_state(conn, symbol)
 
     desired_action = "HOLD"
     note_parts = list(reasons)
 
-    # Flat -> consider fresh entry
-    if pos_qty == 0:
-        if signal == "LONG":
+    # Entry if flat
+    if pos_qty <= 0:
+        if signal == "BUY":
             desired_action = "BUY"
-        elif signal == "SHORT":
-            desired_action = "SELL"
 
-    # Long -> consider exit only
+    # Exit logic if long
     elif pos_qty > 0:
         exit_reason = None
 
-        # trailing stop for long
+        # trailing stop
         if (
             last_price is not None
             and v_atr is not None
@@ -253,9 +199,9 @@ def main():
             trailing_stop = float(pos_state.highest_price) - (trail_atr_multiplier * float(v_atr))
             if float(last_price) < trailing_stop:
                 desired_action = "SELL"
-                exit_reason = f"long_trailing_stop_hit({last_price}<{trailing_stop})"
+                exit_reason = f"trailing_stop_hit({last_price}<{trailing_stop})"
 
-        # time stop for long
+        # time stop
         if desired_action == "HOLD":
             trade_bars = bars_in_trade(pos_state.entry_ts, bars2)
             if (
@@ -266,60 +212,26 @@ def main():
                 and float(last_price) <= float(pos_state.entry_price)
             ):
                 desired_action = "SELL"
-                exit_reason = f"long_time_stop_hit({trade_bars}>={max_bars_in_trade})"
+                exit_reason = f"time_stop_hit({trade_bars}>={max_bars_in_trade})"
 
-        # reversal exit for long
-        if desired_action == "HOLD" and signal == "SHORT":
+        # crossover exit
+        if desired_action == "HOLD" and signal == "SELL":
             desired_action = "SELL"
-            exit_reason = "long_trend_reversal"
-
-        if exit_reason:
-            note_parts.append(exit_reason)
-
-    # Short -> consider exit only
-    elif pos_qty < 0:
-        exit_reason = None
-
-        # trailing stop for short
-        if (
-            last_price is not None
-            and v_atr is not None
-            and pos_state.lowest_price is not None
-        ):
-            trailing_stop = float(pos_state.lowest_price) + (trail_atr_multiplier * float(v_atr))
-            if float(last_price) > trailing_stop:
-                desired_action = "BUY"
-                exit_reason = f"short_trailing_stop_hit({last_price}>{trailing_stop})"
-
-        # time stop for short
-        if desired_action == "HOLD":
-            trade_bars = bars_in_trade(pos_state.entry_ts, bars2)
-            if (
-                trade_bars is not None
-                and trade_bars >= max_bars_in_trade
-                and pos_state.entry_price is not None
-                and last_price is not None
-                and float(last_price) >= float(pos_state.entry_price)
-            ):
-                desired_action = "BUY"
-                exit_reason = f"short_time_stop_hit({trade_bars}>={max_bars_in_trade})"
-
-        # reversal exit for short
-        if desired_action == "HOLD" and signal == "LONG":
-            desired_action = "BUY"
-            exit_reason = "short_trend_reversal"
+            exit_reason = "trend_reversal"
 
         if exit_reason:
             note_parts.append(exit_reason)
 
     action = desired_action
 
-    # Only block fresh entries. Never block exits.
-    entering_long = pos_qty == 0 and desired_action == "BUY" and signal == "LONG"
-    entering_short = pos_qty == 0 and desired_action == "SELL" and signal == "SHORT"
-
-    if entering_long or entering_short:
+    # Apply guardrails only for actual trades
+    if desired_action in ("BUY", "SELL"):
         if state.trades_today >= max_trades_per_day:
+            action = "HOLD"
+            note_parts.append("max_trades_hit")
+    
+    if desired_action == "BUY":
+        if states.trades_today >= max_trades_per_day:
             action = "HOLD"
             note_parts.append("max_trades_hit")
 
@@ -339,66 +251,32 @@ def main():
 
     order_info = None
     executed_qty = None
-    order_side_for_log = None
 
     if action == "BUY":
-        # Buy to cover short
-        if pos_qty < 0:
-            cover_qty = int(abs(float(pos_qty)))
-            if cover_qty > 0:
-                order_info = place_market_order(trading, symbol, "buy", cover_qty)
-                executed_qty = cover_qty
-                order_side_for_log = "buy"
-                clear_position_state(conn, symbol)
+        order_info = place_market_order(trading, symbol, "buy", qty)
+        executed_qty = qty
 
-        # Buy to open long
-        elif pos_qty == 0:
-            order_info = place_market_order(trading, symbol, "buy", qty)
-            executed_qty = qty
-            order_side_for_log = "buy"
-            if last_price is not None:
-                upsert_position_state(
-                    conn,
-                    symbol,
-                    "long",
-                    float(last_price),
-                    ts,
-                    float(last_price),
-                    None,
-                )
+        # optimistic state update for paper-trading simplicity
+        if last_price is not None:
+            upsert_position_state(conn, symbol, float(last_price), ts, float(last_price))
 
     elif action == "SELL":
-        # Sell to close long
-        if pos_qty > 0:
-            sell_qty = int(float(pos_qty))
-            if sell_qty > 0:
-                order_info = place_market_order(trading, symbol, "sell", sell_qty)
-                executed_qty = sell_qty
-                order_side_for_log = "sell"
-                clear_position_state(conn, symbol)
-
-        # Sell to open short
-        elif pos_qty == 0:
-            order_info = place_market_order(trading, symbol, "sell", qty)
-            executed_qty = qty
-            order_side_for_log = "sell"
-            if last_price is not None:
-                upsert_position_state(
-                    conn,
-                    symbol,
-                    "short",
-                    float(last_price),
-                    ts,
-                    None,
-                    float(last_price),
-                )
+        sell_qty = int(float(pos_qty))
+        if sell_qty > 0:
+            order_info = place_market_order(trading, symbol, "sell", sell_qty)
+            executed_qty = sell_qty
+            clear_position_state(conn, symbol)
+        else:
+            logger.info("Position qty not positive; skipping sell.")
+            action = "HOLD"
+            note = "sell_skipped_no_position" if note is None else f"{note};sell_skipped_no_position"
 
     record_run(conn, ts, symbol, last_price, v_fast, v_slow, action, pos_qty, equity, cash, note)
 
     append_csv(
         "/app/logs/equity.csv",
         ["ts_utc", "symbol", "equity", "cash", "position_qty", "last_price"],
-        [ts, symbol, equity, cash, pos_qty, last_price],
+        [ts, symbol, equity, cash, pos_qty, last_price]
     )
 
     if order_info is not None:
@@ -419,27 +297,18 @@ def main():
             conn,
             ts,
             symbol,
-            order_side_for_log if order_side_for_log is not None else action.lower(),
+            action.lower(),
             float(executed_qty if executed_qty is not None else qty),
             order_id,
             status,
             filled_avg,
-            filled_qty,
+            filled_qty
         )
 
         append_csv(
             "/app/logs/trades.csv",
             ["ts_utc", "symbol", "side", "qty", "order_id", "status", "filled_avg_price", "filled_qty"],
-            [
-                ts,
-                symbol,
-                order_side_for_log if order_side_for_log is not None else action.lower(),
-                executed_qty if executed_qty is not None else qty,
-                order_id,
-                status,
-                filled_avg,
-                filled_qty,
-            ],
+            [ts, symbol, action.lower(), executed_qty if executed_qty is not None else qty, order_id, status, filled_avg, filled_qty]
         )
 
         set_last_trade(conn, ts)

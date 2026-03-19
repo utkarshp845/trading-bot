@@ -17,11 +17,9 @@ class BotState:
 @dataclass
 class PositionState:
     symbol: str
-    side: Optional[str]          # "long" | "short" | None
     entry_price: Optional[float]
     entry_ts: Optional[str]
     highest_price: Optional[float]
-    lowest_price: Optional[float]
 
 
 def _utc_now() -> datetime:
@@ -78,20 +76,11 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.execute("""
     CREATE TABLE IF NOT EXISTS position_state (
         symbol TEXT PRIMARY KEY,
-        side TEXT,
         entry_price REAL,
         entry_ts TEXT,
-        highest_price REAL,
-        lowest_price REAL
+        highest_price REAL
     );
     """)
-
-    # Migrations for columns added after initial schema
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(position_state);")}
-    if "side" not in existing:
-        conn.execute("ALTER TABLE position_state ADD COLUMN side TEXT;")
-    if "lowest_price" not in existing:
-        conn.execute("ALTER TABLE position_state ADD COLUMN lowest_price REAL;")
 
     conn.commit()
 
@@ -135,52 +124,39 @@ def increment_trades_today(conn: sqlite3.Connection) -> None:
 
 def get_position_state(conn: sqlite3.Connection, symbol: str) -> PositionState:
     cur = conn.execute(
-        "SELECT symbol, side, entry_price, entry_ts, highest_price, lowest_price FROM position_state WHERE symbol=?;",
+        "SELECT symbol, entry_price, entry_ts, highest_price FROM position_state WHERE symbol=?;",
         (symbol,)
     )
     row = cur.fetchone()
 
     if row is None:
-        return PositionState(
-            symbol=symbol,
-            side=None,
-            entry_price=None,
-            entry_ts=None,
-            highest_price=None,
-            lowest_price=None,
-        )
+        return PositionState(symbol=symbol, entry_price=None, entry_ts=None, highest_price=None)
 
     return PositionState(
         symbol=row[0],
-        side=row[1],
-        entry_price=row[2],
-        entry_ts=row[3],
-        highest_price=row[4],
-        lowest_price=row[5],
+        entry_price=row[1],
+        entry_ts=row[2],
+        highest_price=row[3],
     )
 
 
 def upsert_position_state(
     conn: sqlite3.Connection,
     symbol: str,
-    side: Optional[str],
     entry_price: Optional[float],
     entry_ts: Optional[str],
-    highest_price: Optional[float],
-    lowest_price: Optional[float]
+    highest_price: Optional[float]
 ) -> None:
     conn.execute(
         """
-        INSERT INTO position_state (symbol, side, entry_price, entry_ts, highest_price, lowest_price)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO position_state (symbol, entry_price, entry_ts, highest_price)
+        VALUES (?, ?, ?, ?)
         ON CONFLICT(symbol) DO UPDATE SET
-            side=excluded.side,
             entry_price=excluded.entry_price,
             entry_ts=excluded.entry_ts,
-            highest_price=excluded.highest_price,
-            lowest_price=excluded.lowest_price;
+            highest_price=excluded.highest_price;
         """,
-        (symbol, side, entry_price, entry_ts, highest_price, lowest_price)
+        (symbol, entry_price, entry_ts, highest_price)
     )
     conn.commit()
 

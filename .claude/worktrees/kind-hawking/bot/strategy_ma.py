@@ -80,7 +80,7 @@ def _in_valid_trade_window_et(ts) -> bool:
 def generate_signal(df: pd.DataFrame, cfg: StrategyConfig) -> tuple[str, dict, list[str]]:
     """
     Returns:
-      signal: "LONG" | "SHORT" | "HOLD"
+      signal: "BUY" | "SELL" | "HOLD"
       metrics: dict
       reasons: list[str]
     """
@@ -107,6 +107,8 @@ def generate_signal(df: pd.DataFrame, cfg: StrategyConfig) -> tuple[str, dict, l
     if any(metrics[k] is None for k in required):
         return "HOLD", metrics, ["indicators_not_ready"]
 
+    reasons = []
+
     trend_up = metrics["sma_fast"] > metrics["sma_slow"]
     trend_down = metrics["sma_fast"] < metrics["sma_slow"]
     adx_ok = metrics["adx"] > cfg.adx_threshold
@@ -114,29 +116,21 @@ def generate_signal(df: pd.DataFrame, cfg: StrategyConfig) -> tuple[str, dict, l
     volume_ok = metrics["volume"] > (0.8 * metrics["volume_ma"])
     time_window_ok = metrics["time_window_ok"]
 
-    bullish_ok = trend_up and adx_ok and atr_ok and volume_ok and time_window_ok
-    bearish_ok = trend_down and adx_ok and atr_ok and volume_ok and time_window_ok
-
-    if bullish_ok:
-        return "LONG", metrics, ["long_entry_filters_passed"]
-
-    if bearish_ok:
-        return "SHORT", metrics, ["short_entry_filters_passed"]
-
-    reasons = []
+    if not trend_up:
+        reasons.append("trend_not_up")
     if not adx_ok:
         reasons.append("adx_below_threshold")
     if not atr_ok:
         reasons.append("atr_too_high")
     if not volume_ok:
-        reasons.append("volume_below_threshold")
+        reasons.append("volume_below_ma")
     if not time_window_ok:
         reasons.append("outside_time_window")
-    if trend_up:
-        reasons.append("trend_up_no_entry")
-    elif trend_down:
-        reasons.append("trend_down_no_entry")
-    else:
-        reasons.append("trend_neutral")
+
+    if trend_up and adx_ok and atr_ok and volume_ok and time_window_ok:
+        return "BUY", metrics, ["entry_filters_passed"]
+
+    if trend_down:
+        return "SELL", metrics, ["trend_reversal"]
 
     return "HOLD", metrics, reasons
