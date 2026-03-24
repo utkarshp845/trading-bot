@@ -1,5 +1,6 @@
 import logging
-import os
+
+from bot.paths import LOGS_DIR, ensure_runtime_dirs
 
 def setup_logger() -> logging.Logger:
     logger = logging.getLogger("trading-bot")
@@ -16,8 +17,9 @@ def setup_logger() -> logging.Logger:
     logger.addHandler(sh)
 
     # file
-    log_path = os.path.join("/app/logs", "bot.log")
-    fh = logging.FileHandler(log_path)
+    ensure_runtime_dirs()
+    log_path = LOGS_DIR / "bot.log"
+    fh = logging.FileHandler(log_path, encoding="utf-8")
     fh.setFormatter(fmt)
     logger.addHandler(fh)
 

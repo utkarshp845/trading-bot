@@ -8,12 +8,34 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
+from alpaca.trading.requests import MarketOrderRequest
 
 def _env_bool(name: str, default: bool = False) -> bool:
     v = os.getenv(name, str(default)).strip().lower()
     return v in ("1", "true", "yes", "y", "on")
+
+
+def _as_float(value) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def normalize_order_status(status) -> str | None:
+    if status is None:
+        return None
+
+    raw = getattr(status, "value", status)
+    text = str(raw).strip()
+    if not text:
+        return None
+    if "." in text:
+        text = text.split(".")[-1]
+    return text.upper()
 
 def make_clients() -> tuple[TradingClient, StockHistoricalDataClient]:
     key = os.environ["ALPACA_API_KEY"]
@@ -95,3 +117,32 @@ def place_market_order(trading: TradingClient, symbol: str, side: str, qty: int)
 
 def get_order(trading: TradingClient, order_id: str):
     return trading.get_order_by_id(order_id)
+
+
+def get_position_snapshot(trading: TradingClient, symbol: str) -> dict | None:
+    try:
+        pos = trading.get_open_position(symbol)
+    except Exception:
+        return None
+
+    qty = _as_float(getattr(pos, "qty", None))
+    if qty is None or qty == 0:
+        return None
+
+    avg_entry_price = _as_float(getattr(pos, "avg_entry_price", None))
+    current_price = _as_float(getattr(pos, "current_price", None))
+    return {
+        "symbol": symbol,
+        "qty": qty,
+        "side": "long" if qty > 0 else "short",
+        "avg_entry_price": avg_entry_price,
+        "current_price": current_price,
+    }
+
+
+def is_market_open(trading: TradingClient) -> bool | None:
+    try:
+        clock = trading.get_clock()
+        return bool(getattr(clock, "is_open", None))
+    except Exception:
+        return None
