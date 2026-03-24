@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+import json
 import os
 import pandas as pd
 from dotenv import load_dotenv
@@ -32,6 +33,7 @@ from bot.store import (
     init_db,
     mark_order_processed,
     record_closed_trade,
+    record_event,
     record_order_submission,
     record_run,
     set_consecutive_losses,
@@ -103,6 +105,10 @@ def _to_iso(value: object) -> str | None:
     return dt.isoformat() if dt is not None else None
 
 
+def emit_event(conn, ts: str, level: str, event_type: str, symbol: str | None, message: str | None, payload: dict | None = None) -> None:
+    record_event(conn, ts, level, event_type, symbol=symbol, message=message, payload=payload)
+
+
 def sync_position_state_with_broker(conn, trading, symbol: str, logger):
     broker_position = get_position_snapshot(trading, symbol)
     pos_state = get_position_state(conn, symbol)
@@ -165,6 +171,22 @@ def reconcile_submitted_orders(conn, trading, symbol: str, logger) -> None:
             processed_at = utc_iso_now()
             position_before = get_position_state(conn, symbol)
             exit_ts = filled_at or order.ts
+            emit_event(
+                conn,
+                processed_at,
+                "INFO",
+                "order_filled",
+                symbol,
+                f"Order {order.order_id} filled.",
+                {
+                    "order_id": order.order_id,
+                    "side": order.side,
+                    "intent": order.intent,
+                    "filled_avg_price": filled_avg,
+                    "filled_qty": filled_qty,
+                    "filled_at": filled_at,
+                },
+            )
 
             if order.intent == "exit":
                 exit_price = filled_avg
@@ -213,6 +235,15 @@ def reconcile_submitted_orders(conn, trading, symbol: str, logger) -> None:
 
         if status in TERMINAL_ORDER_STATUSES and order.processed_at is None:
             mark_order_processed(conn, order.order_id, utc_iso_now())
+            emit_event(
+                conn,
+                utc_iso_now(),
+                "WARN" if status != "FILLED" else "INFO",
+                "order_terminal",
+                symbol,
+                f"Order {order.order_id} reached terminal status {status}.",
+                {"order_id": order.order_id, "status": status, "intent": order.intent},
+            )
             logger.info(f"Marked terminal non-fill order as processed order_id={order.order_id} status={status}")
 
 
@@ -252,6 +283,7 @@ def main():
     trading, data = make_clients()
     conn = connect()
     init_db(conn)
+    emit_event(conn, ts, "INFO", "run_start", symbol, "Bot run started.", {"timeframe_minutes": timeframe_minutes, "qty": qty})
 
     reconcile_submitted_orders(conn, trading, symbol, logger)
 
@@ -266,7 +298,8 @@ def main():
     if not market_open:
         note = "market_closed"
         logger.info("Market closed. Recording HOLD and exiting.")
-        record_run(conn, ts, symbol, None, None, None, "HOLD", pos_qty, equity, cash, note)
+        emit_event(conn, ts, "INFO", "market_closed", symbol, "Market is closed; holding.", None)
+        record_run(conn, ts, symbol, None, None, None, "HOLD", "HOLD", pos_qty, equity, cash, note)
         append_csv(
             LOGS_DIR / "equity.csv",
             ["ts_utc", "symbol", "equity", "cash", "position_qty", "last_price"],
@@ -279,7 +312,8 @@ def main():
     if bars.empty:
         note = "no_bars"
         logger.warning("No bars returned. Recording run as HOLD.")
-        record_run(conn, ts, symbol, None, None, None, "HOLD", pos_qty, equity, cash, note)
+        emit_event(conn, ts, "WARN", "no_bars", symbol, "No bars returned from market data client.", None)
+        record_run(conn, ts, symbol, None, None, None, "HOLD", "HOLD", pos_qty, equity, cash, note)
         append_csv(
             LOGS_DIR / "equity.csv",
             ["ts_utc", "symbol", "equity", "cash", "position_qty", "last_price"],
@@ -302,6 +336,15 @@ def main():
 
     bars2 = compute_indicators(bars, cfg)
     signal, metrics, reasons = generate_signal(bars2, cfg)
+    emit_event(
+        conn,
+        ts,
+        "INFO",
+        "signal_evaluated",
+        symbol,
+        f"Signal evaluated as {signal}.",
+        {"signal": signal, "metrics": metrics, "reasons": reasons},
+    )
 
     last_price = metrics.get("price")
     v_fast = metrics.get("sma_fast")
@@ -432,6 +475,15 @@ def main():
         if not risk_eval.allow_entries:
             action = "HOLD"
             note_parts.extend(risk_eval.reasons)
+            emit_event(
+                conn,
+                ts,
+                "WARN",
+                "entry_blocked_risk",
+                symbol,
+                "Entry blocked by risk guardrails.",
+                {"risk_reasons": risk_eval.reasons, "signal": signal},
+            )
 
         since = bars_since(state.last_trade_ts, bars2)
         if since is not None and since < cooldown_bars:
@@ -441,8 +493,19 @@ def main():
     if pending_orders:
         action = "HOLD"
         note_parts.append("pending_order_in_flight")
+        emit_event(
+            conn,
+            ts,
+            "WARN",
+            "entry_blocked_pending_order",
+            symbol,
+            "Entry blocked because an order is already in flight.",
+            None,
+        )
 
     note = ";".join(dict.fromkeys(note_parts)) if note_parts else None
+    metrics_json = json.dumps(metrics, sort_keys=True)
+    reasons_text = ";".join(reasons) if reasons else None
 
     logger.info(
         f"price={last_price} sma_fast={v_fast} sma_slow={v_slow} "
@@ -483,7 +546,23 @@ def main():
             order_side_for_log = "sell"
             order_intent = "entry"
 
-    record_run(conn, ts, symbol, last_price, v_fast, v_slow, action, pos_qty, equity, cash, note)
+    record_run(
+        conn,
+        ts,
+        symbol,
+        last_price,
+        v_fast,
+        v_slow,
+        signal,
+        action,
+        pos_qty,
+        equity,
+        cash,
+        note,
+        reasons=reasons_text,
+        metrics_json=metrics_json,
+        bar_ts=bar_ts,
+    )
 
     append_csv(
         LOGS_DIR / "equity.csv",
@@ -522,6 +601,23 @@ def main():
             pos_qty,
             filled_at,
         )
+        emit_event(
+            conn,
+            ts,
+            "INFO",
+            "order_submitted",
+            symbol,
+            f"Submitted {order_intent or 'unknown'} order {order_id}.",
+            {
+                "order_id": order_id,
+                "status": status,
+                "intent": order_intent,
+                "side": order_side_for_log,
+                "qty": executed_qty if executed_qty is not None else qty,
+                "filled_avg_price": filled_avg,
+                "filled_qty": filled_qty,
+            },
+        )
 
         append_csv(
             LOGS_DIR / "trades.csv",
@@ -542,6 +638,7 @@ def main():
 
         logger.info(f"Order submitted order_id={order_id} status={status} intent={order_intent}")
 
+    emit_event(conn, utc_iso_now(), "INFO", "run_complete", symbol, "Bot run complete.", {"final_action": action, "note": note})
     logger.info("Run complete.")
 
 

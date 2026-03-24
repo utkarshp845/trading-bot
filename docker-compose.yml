@@ -8,3 +8,21 @@ services:
       - ./logs:/app/logs
       - ./reports:/app/reports
     command: ["python", "-m", "bot.main"]
+  validate:
+    build: .
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./reports:/app/reports
+    command: ["python", "-m", "bot.validate_runtime"]
+  monitor:
+    build: .
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./reports:/app/reports
+    command: ["python", "-m", "bot.report_monitor"]

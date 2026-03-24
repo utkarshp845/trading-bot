@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -50,6 +51,16 @@ class OrderRecord:
     filled_at: Optional[str]
 
 
+@dataclass
+class EventRecord:
+    ts: str
+    level: str
+    event_type: str
+    symbol: Optional[str]
+    message: Optional[str]
+    payload_json: Optional[str]
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -87,10 +98,14 @@ def init_db(conn: sqlite3.Connection) -> None:
             sma_fast REAL,
             sma_slow REAL,
             signal TEXT NOT NULL,
+            desired_action TEXT,
             position_qty REAL,
             equity REAL,
             cash REAL,
-            note TEXT
+            note TEXT,
+            reasons TEXT,
+            metrics_json TEXT,
+            bar_ts TEXT
         );
         """
     )
@@ -149,6 +164,20 @@ def init_db(conn: sqlite3.Connection) -> None:
         """
     )
 
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            level TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            symbol TEXT,
+            message TEXT,
+            payload_json TEXT
+        );
+        """
+    )
+
     position_cols = {row[1] for row in conn.execute("PRAGMA table_info(position_state);")}
     if "side" not in position_cols:
         conn.execute("ALTER TABLE position_state ADD COLUMN side TEXT;")
@@ -174,6 +203,16 @@ def init_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE orders ADD COLUMN processed_at TEXT;")
     if "filled_at" not in order_cols:
         conn.execute("ALTER TABLE orders ADD COLUMN filled_at TEXT;")
+
+    run_cols = {row[1] for row in conn.execute("PRAGMA table_info(runs);")}
+    if "desired_action" not in run_cols:
+        conn.execute("ALTER TABLE runs ADD COLUMN desired_action TEXT;")
+    if "reasons" not in run_cols:
+        conn.execute("ALTER TABLE runs ADD COLUMN reasons TEXT;")
+    if "metrics_json" not in run_cols:
+        conn.execute("ALTER TABLE runs ADD COLUMN metrics_json TEXT;")
+    if "bar_ts" not in run_cols:
+        conn.execute("ALTER TABLE runs ADD COLUMN bar_ts TEXT;")
 
     conn.commit()
 
@@ -309,17 +348,23 @@ def record_run(
     sma_fast: float | None,
     sma_slow: float | None,
     signal: str,
+    desired_action: str | None,
     position_qty: float | None,
     equity: float | None,
     cash: float | None,
     note: str | None,
+    reasons: str | None = None,
+    metrics_json: str | None = None,
+    bar_ts: str | None = None,
 ) -> None:
     conn.execute(
         """
-        INSERT INTO runs (ts, symbol, price, sma_fast, sma_slow, signal, position_qty, equity, cash, note)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        INSERT INTO runs (
+            ts, symbol, price, sma_fast, sma_slow, signal, desired_action, position_qty, equity, cash, note, reasons, metrics_json, bar_ts
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """,
-        (ts, symbol, price, sma_fast, sma_slow, signal, position_qty, equity, cash, note),
+        (ts, symbol, price, sma_fast, sma_slow, signal, desired_action, position_qty, equity, cash, note, reasons, metrics_json, bar_ts),
     )
     conn.commit()
 
@@ -464,5 +509,25 @@ def record_closed_trade(
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """,
         (symbol, side, entry_ts, exit_ts, entry_price, exit_price, qty, pnl, return_pct, entry_reason, exit_reason, bars_held),
+    )
+    conn.commit()
+
+
+def record_event(
+    conn: sqlite3.Connection,
+    ts: str,
+    level: str,
+    event_type: str,
+    symbol: str | None = None,
+    message: str | None = None,
+    payload: dict | None = None,
+) -> None:
+    payload_json = json.dumps(payload, sort_keys=True) if payload is not None else None
+    conn.execute(
+        """
+        INSERT INTO events (ts, level, event_type, symbol, message, payload_json)
+        VALUES (?, ?, ?, ?, ?, ?);
+        """,
+        (ts, level, event_type, symbol, message, payload_json),
     )
     conn.commit()
