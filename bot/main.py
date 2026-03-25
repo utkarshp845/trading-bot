@@ -5,6 +5,7 @@ from pathlib import Path
 
 import json
 import os
+import time
 import pandas as pd
 from dotenv import load_dotenv
 from zoneinfo import ZoneInfo
@@ -103,6 +104,13 @@ def _safe_float(value: object) -> float | None:
 def _to_iso(value: object) -> str | None:
     dt = parse_ts(value)
     return dt.isoformat() if dt is not None else None
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def emit_event(conn, ts: str, level: str, event_type: str, symbol: str | None, message: str | None, payload: dict | None = None) -> None:
@@ -274,16 +282,42 @@ def main():
     max_trades_per_day = int(os.getenv("MAX_TRADES_PER_DAY", "5"))
     max_daily_drawdown_pct = float(os.getenv("MAX_DAILY_DRAWDOWN_PCT", "0.01"))
     max_consecutive_losses = int(os.getenv("MAX_CONSECUTIVE_LOSSES", "3"))
-    stale_bar_max_minutes = int(os.getenv("STALE_BAR_MAX_MINUTES", str(max(15, timeframe_minutes * 3))))
+    stale_bar_checks_enabled = _env_flag("ENABLE_STALE_BAR_CHECK", False)
+    stale_bar_max_minutes = (
+        int(os.getenv("STALE_BAR_MAX_MINUTES", str(max(15, timeframe_minutes * 3))))
+        if stale_bar_checks_enabled
+        else 0
+    )
     max_position_notional_pct = float(os.getenv("MAX_POSITION_NOTIONAL_PCT", "0.02"))
+    startup_delay_seconds = max(0, int(os.getenv("STARTUP_DELAY_SECONDS", "20")))
 
     ts = utc_iso_now()
-    logger.info(f"Run start ts={ts} symbol={symbol} tf={timeframe_minutes}m qty={qty}")
+    logger.info(
+        f"Run start ts={ts} symbol={symbol} tf={timeframe_minutes}m qty={qty} "
+        f"stale_bar_check={'enabled' if stale_bar_checks_enabled else 'disabled'} startup_delay={startup_delay_seconds}s"
+    )
 
     trading, data = make_clients()
     conn = connect()
     init_db(conn)
-    emit_event(conn, ts, "INFO", "run_start", symbol, "Bot run started.", {"timeframe_minutes": timeframe_minutes, "qty": qty})
+    emit_event(
+        conn,
+        ts,
+        "INFO",
+        "run_start",
+        symbol,
+        "Bot run started.",
+        {
+            "timeframe_minutes": timeframe_minutes,
+            "qty": qty,
+            "stale_bar_check_enabled": stale_bar_checks_enabled,
+            "startup_delay_seconds": startup_delay_seconds,
+        },
+    )
+
+    if startup_delay_seconds > 0:
+        logger.info(f"Sleeping {startup_delay_seconds}s before broker and data checks to let the latest bar settle.")
+        time.sleep(startup_delay_seconds)
 
     reconcile_submitted_orders(conn, trading, symbol, logger)
 

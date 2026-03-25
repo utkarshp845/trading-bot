@@ -58,6 +58,11 @@ Run one bot cycle:
 docker compose run --rm bot
 ```
 
+Current runtime defaults:
+
+- entry stale-bar blocking is disabled unless `ENABLE_STALE_BAR_CHECK=1`
+- bot startup waits `20` seconds by default before broker/data checks; override with `STARTUP_DELAY_SECONDS`
+
 ## Notes
 
 - Start Docker Desktop before using the commands above.
