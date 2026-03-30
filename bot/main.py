@@ -117,6 +117,48 @@ def emit_event(conn, ts: str, level: str, event_type: str, symbol: str | None, m
     record_event(conn, ts, level, event_type, symbol=symbol, message=message, payload=payload)
 
 
+def semantic_action_type(position_qty: float, action: str) -> str | None:
+    if action == "BUY":
+        if position_qty < 0:
+            return "close_short"
+        if position_qty == 0:
+            return "open_long"
+    if action == "SELL":
+        if position_qty > 0:
+            return "close_long"
+        if position_qty == 0:
+            return "open_short"
+    return None
+
+
+def refresh_order_fill_snapshot(trading, order_id: str, logger):
+    latest_order = None
+    for attempt in range(2):
+        if attempt > 0:
+            time.sleep(0.75)
+        try:
+            latest_order = get_order(trading, order_id)
+        except Exception as exc:
+            logger.warning(f"Could not fetch order status for {order_id}: {exc}")
+            continue
+        status = normalize_order_status(getattr(latest_order, "status", None))
+        filled_avg = _safe_float(getattr(latest_order, "filled_avg_price", None))
+        filled_qty = _safe_float(getattr(latest_order, "filled_qty", None))
+        filled_at = _to_iso(getattr(latest_order, "filled_at", None))
+        if filled_avg is not None or filled_qty is not None or status == "FILLED":
+            return status, filled_avg, filled_qty, filled_at
+
+    if latest_order is None:
+        return None, None, None, None
+
+    return (
+        normalize_order_status(getattr(latest_order, "status", None)),
+        _safe_float(getattr(latest_order, "filled_avg_price", None)),
+        _safe_float(getattr(latest_order, "filled_qty", None)),
+        _to_iso(getattr(latest_order, "filled_at", None)),
+    )
+
+
 def sync_position_state_with_broker(conn, trading, symbol: str, logger):
     broker_position = get_position_snapshot(trading, symbol)
     pos_state = get_position_state(conn, symbol)
@@ -190,6 +232,7 @@ def reconcile_submitted_orders(conn, trading, symbol: str, logger) -> None:
                     "order_id": order.order_id,
                     "side": order.side,
                     "intent": order.intent,
+                    "action_type": order.action_type,
                     "filled_avg_price": filled_avg,
                     "filled_qty": filled_qty,
                     "filled_at": filled_at,
@@ -238,7 +281,10 @@ def reconcile_submitted_orders(conn, trading, symbol: str, logger) -> None:
             if order.intent == "entry":
                 increment_trades_today(conn)
             mark_order_processed(conn, order.order_id, processed_at)
-            logger.info(f"Order fill processed order_id={order.order_id} intent={order.intent} status={status}")
+            logger.info(
+                f"Order fill processed order_id={order.order_id} intent={order.intent} "
+                f"action_type={order.action_type} status={status}"
+            )
             continue
 
         if status in TERMINAL_ORDER_STATUSES and order.processed_at is None:
@@ -250,7 +296,7 @@ def reconcile_submitted_orders(conn, trading, symbol: str, logger) -> None:
                 "order_terminal",
                 symbol,
                 f"Order {order.order_id} reached terminal status {status}.",
-                {"order_id": order.order_id, "status": status, "intent": order.intent},
+                {"order_id": order.order_id, "status": status, "intent": order.intent, "action_type": order.action_type},
             )
             logger.info(f"Marked terminal non-fill order as processed order_id={order.order_id} status={status}")
 
@@ -276,15 +322,23 @@ def main():
     atr_period = int(os.getenv("ATR_PERIOD", "14"))
     atr_max_pct = float(os.getenv("ATR_MAX_PCT", "0.0045"))
     volume_ma_period = int(os.getenv("VOLUME_MA_PERIOD", "20"))
+    volume_min_multiplier = float(os.getenv("VOLUME_MIN_MULTIPLIER", os.getenv("VOLUME_THRESHOLD_MULTIPLIER", "0.8")))
     trail_atr_multiplier = float(os.getenv("TRAIL_ATR_MULTIPLIER", "1.5"))
     max_bars_in_trade = int(os.getenv("MAX_BARS_IN_TRADE", "12"))
     cooldown_bars = int(os.getenv("COOLDOWN_BARS", "2"))
     max_trades_per_day = int(os.getenv("MAX_TRADES_PER_DAY", "5"))
     max_daily_drawdown_pct = float(os.getenv("MAX_DAILY_DRAWDOWN_PCT", "0.01"))
+    max_daily_loss = float(os.getenv("MAX_DAILY_LOSS", "0"))
     max_consecutive_losses = int(os.getenv("MAX_CONSECUTIVE_LOSSES", "3"))
+    strategy_version = os.getenv("STRATEGY_VERSION", "v1").strip() or "v1"
     stale_bar_checks_enabled = _env_flag("ENABLE_STALE_BAR_CHECK", False)
-    stale_bar_max_minutes = (
-        int(os.getenv("STALE_BAR_MAX_MINUTES", str(max(15, timeframe_minutes * 3))))
+    max_bar_age_seconds = (
+        int(
+            os.getenv(
+                "MAX_BAR_AGE_SECONDS",
+                str(int(os.getenv("STALE_BAR_MAX_MINUTES", str(max(15, timeframe_minutes * 3)))) * 60),
+            )
+        )
         if stale_bar_checks_enabled
         else 0
     )
@@ -294,7 +348,8 @@ def main():
     ts = utc_iso_now()
     logger.info(
         f"Run start ts={ts} symbol={symbol} tf={timeframe_minutes}m qty={qty} "
-        f"stale_bar_check={'enabled' if stale_bar_checks_enabled else 'disabled'} startup_delay={startup_delay_seconds}s"
+        f"strategy_version={strategy_version} stale_bar_check={'enabled' if stale_bar_checks_enabled else 'disabled'} "
+        f"max_bar_age_seconds={max_bar_age_seconds} startup_delay={startup_delay_seconds}s"
     )
 
     trading, data = make_clients()
@@ -310,7 +365,9 @@ def main():
         {
             "timeframe_minutes": timeframe_minutes,
             "qty": qty,
+            "strategy_version": strategy_version,
             "stale_bar_check_enabled": stale_bar_checks_enabled,
+            "max_bar_age_seconds": max_bar_age_seconds,
             "startup_delay_seconds": startup_delay_seconds,
         },
     )
@@ -333,7 +390,7 @@ def main():
         note = "market_closed"
         logger.info("Market closed. Recording HOLD and exiting.")
         emit_event(conn, ts, "INFO", "market_closed", symbol, "Market is closed; holding.", None)
-        record_run(conn, ts, symbol, None, None, None, "HOLD", "HOLD", pos_qty, equity, cash, note)
+        record_run(conn, ts, symbol, None, None, None, "HOLD", "HOLD", pos_qty, equity, cash, note, strategy_version=strategy_version)
         append_csv(
             LOGS_DIR / "equity.csv",
             ["ts_utc", "symbol", "equity", "cash", "position_qty", "last_price"],
@@ -347,7 +404,7 @@ def main():
         note = "no_bars"
         logger.warning("No bars returned. Recording run as HOLD.")
         emit_event(conn, ts, "WARN", "no_bars", symbol, "No bars returned from market data client.", None)
-        record_run(conn, ts, symbol, None, None, None, "HOLD", "HOLD", pos_qty, equity, cash, note)
+        record_run(conn, ts, symbol, None, None, None, "HOLD", "HOLD", pos_qty, equity, cash, note, strategy_version=strategy_version)
         append_csv(
             LOGS_DIR / "equity.csv",
             ["ts_utc", "symbol", "equity", "cash", "position_qty", "last_price"],
@@ -364,6 +421,7 @@ def main():
         atr_period=atr_period,
         atr_max_pct=atr_max_pct,
         volume_ma_period=volume_ma_period,
+        volume_min_multiplier=volume_min_multiplier,
         trail_atr_multiplier=trail_atr_multiplier,
         max_bars_in_trade=max_bars_in_trade,
     )
@@ -495,8 +553,9 @@ def main():
             RiskConfig(
                 max_trades_per_day=max_trades_per_day,
                 max_daily_drawdown_pct=max_daily_drawdown_pct,
+                max_daily_loss=max_daily_loss,
                 max_consecutive_losses=max_consecutive_losses,
-                stale_bar_max_minutes=stale_bar_max_minutes,
+                max_bar_age_seconds=max_bar_age_seconds,
                 max_position_notional_pct=max_position_notional_pct,
             ),
             trades_today=state.trades_today,
@@ -522,7 +581,16 @@ def main():
         since = bars_since(state.last_trade_ts, bars2)
         if since is not None and since < cooldown_bars:
             action = "HOLD"
-            note_parts.append(f"cooldown({since}<{cooldown_bars})")
+            note_parts.append("cooldown")
+            emit_event(
+                conn,
+                ts,
+                "WARN",
+                "entry_blocked_cooldown",
+                symbol,
+                "Entry blocked by cooldown.",
+                {"bars_since_last_trade": since, "cooldown_bars": cooldown_bars, "signal": signal},
+            )
 
     if pending_orders:
         action = "HOLD"
@@ -540,12 +608,14 @@ def main():
     note = ";".join(dict.fromkeys(note_parts)) if note_parts else None
     metrics_json = json.dumps(metrics, sort_keys=True)
     reasons_text = ";".join(reasons) if reasons else None
+    action_type = semantic_action_type(pos_qty, action)
 
     logger.info(
         f"price={last_price} sma_fast={v_fast} sma_slow={v_slow} "
         f"adx={v_adx} atr={v_atr} atr_pct={v_atr_pct} volume={v_volume} volume_ma={v_volume_ma} "
         f"signal={signal} pos_qty={pos_qty} desired_action={desired_action} "
-        f"action={action} trades_today={state.trades_today} consecutive_losses={state.consecutive_losses} note={note}"
+        f"action={action} action_type={action_type} trades_today={state.trades_today} "
+        f"consecutive_losses={state.consecutive_losses} note={note}"
     )
 
     order_info = None
@@ -596,6 +666,7 @@ def main():
         reasons=reasons_text,
         metrics_json=metrics_json,
         bar_ts=bar_ts,
+        strategy_version=strategy_version,
     )
 
     append_csv(
@@ -610,15 +681,11 @@ def main():
         filled_avg = _safe_float(getattr(order_info, "filled_avg_price", None))
         filled_qty = _safe_float(getattr(order_info, "filled_qty", None))
         filled_at = _to_iso(getattr(order_info, "filled_at", None))
-
-        try:
-            refreshed = get_order(trading, order_id)
-            status = normalize_order_status(getattr(refreshed, "status", None)) or status
-            filled_avg = _safe_float(getattr(refreshed, "filled_avg_price", None)) or filled_avg
-            filled_qty = _safe_float(getattr(refreshed, "filled_qty", None)) or filled_qty
-            filled_at = _to_iso(getattr(refreshed, "filled_at", None)) or filled_at
-        except Exception as exc:
-            logger.warning(f"Could not fetch order status: {exc}")
+        refreshed_status, refreshed_avg, refreshed_qty, refreshed_filled_at = refresh_order_fill_snapshot(trading, order_id, logger)
+        status = refreshed_status or status
+        filled_avg = refreshed_avg if refreshed_avg is not None else filled_avg
+        filled_qty = refreshed_qty if refreshed_qty is not None else filled_qty
+        filled_at = refreshed_filled_at or filled_at
 
         record_order_submission(
             conn,
@@ -631,6 +698,7 @@ def main():
             filled_avg,
             filled_qty,
             order_intent,
+            action_type,
             note,
             pos_qty,
             filled_at,
@@ -646,6 +714,7 @@ def main():
                 "order_id": order_id,
                 "status": status,
                 "intent": order_intent,
+                "action_type": action_type,
                 "side": order_side_for_log,
                 "qty": executed_qty if executed_qty is not None else qty,
                 "filled_avg_price": filled_avg,
@@ -665,12 +734,15 @@ def main():
                 status,
                 filled_avg,
                 filled_qty,
-                order_intent,
+                action_type if action_type is not None else order_intent,
                 note,
             ],
         )
 
-        logger.info(f"Order submitted order_id={order_id} status={status} intent={order_intent}")
+        logger.info(
+            f"Order submitted order_id={order_id} status={status} side={order_side_for_log} "
+            f"intent={order_intent} action_type={action_type}"
+        )
 
     emit_event(conn, utc_iso_now(), "INFO", "run_complete", symbol, "Bot run complete.", {"final_action": action, "note": note})
     logger.info("Run complete.")

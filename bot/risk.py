@@ -15,8 +15,9 @@ ET = ZoneInfo("America/New_York")
 class RiskConfig:
     max_trades_per_day: int
     max_daily_drawdown_pct: float
+    max_daily_loss: float
     max_consecutive_losses: int
-    stale_bar_max_minutes: int
+    max_bar_age_seconds: int
     max_position_notional_pct: float
 
 
@@ -54,14 +55,14 @@ def parse_ts(value: object) -> Optional[datetime]:
     return dt.astimezone(timezone.utc)
 
 
-def is_stale_bar(last_bar_ts: object, max_age_minutes: int, now_utc: Optional[datetime] = None) -> bool:
+def is_stale_bar(last_bar_ts: object, max_age_seconds: int, now_utc: Optional[datetime] = None) -> bool:
     bar_dt = parse_ts(last_bar_ts)
     if bar_dt is None:
         return True
 
     current = now_utc or datetime.now(timezone.utc)
     age_seconds = (current - bar_dt).total_seconds()
-    return age_seconds > (max_age_minutes * 60)
+    return age_seconds > max_age_seconds
 
 
 def evaluate_entry_risk(
@@ -80,7 +81,12 @@ def evaluate_entry_risk(
         reasons.append("max_trades_hit")
 
     if cfg.max_consecutive_losses > 0 and consecutive_losses >= cfg.max_consecutive_losses:
-        reasons.append("loss_streak_limit_hit")
+        reasons.append("max_consecutive_losses_hit")
+
+    if cfg.max_daily_loss > 0 and daily_start_equity is not None and current_equity is not None:
+        daily_pnl = current_equity - daily_start_equity
+        if daily_pnl <= (-1.0 * cfg.max_daily_loss):
+            reasons.append("max_daily_loss_hit")
 
     if (
         daily_start_equity is not None
@@ -92,7 +98,7 @@ def evaluate_entry_risk(
         if drawdown <= (-1.0 * cfg.max_daily_drawdown_pct):
             reasons.append(f"daily_drawdown_limit_hit({drawdown:.4f})")
 
-    if cfg.stale_bar_max_minutes > 0 and is_stale_bar(last_bar_ts, cfg.stale_bar_max_minutes, now_utc):
+    if cfg.max_bar_age_seconds > 0 and is_stale_bar(last_bar_ts, cfg.max_bar_age_seconds, now_utc):
         reasons.append("stale_bar_data")
 
     if (

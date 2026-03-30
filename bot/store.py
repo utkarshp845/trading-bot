@@ -45,6 +45,7 @@ class OrderRecord:
     filled_avg_price: Optional[float]
     filled_qty: Optional[float]
     intent: Optional[str]
+    action_type: Optional[str]
     notes: Optional[str]
     submitted_position_qty: Optional[float]
     processed_at: Optional[str]
@@ -105,7 +106,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             note TEXT,
             reasons TEXT,
             metrics_json TEXT,
-            bar_ts TEXT
+            bar_ts TEXT,
+            strategy_version TEXT
         );
         """
     )
@@ -123,6 +125,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             filled_avg_price REAL,
             filled_qty REAL,
             intent TEXT,
+            action_type TEXT,
             notes TEXT,
             submitted_position_qty REAL,
             processed_at TEXT,
@@ -197,6 +200,8 @@ def init_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE orders ADD COLUMN intent TEXT;")
     if "notes" not in order_cols:
         conn.execute("ALTER TABLE orders ADD COLUMN notes TEXT;")
+    if "action_type" not in order_cols:
+        conn.execute("ALTER TABLE orders ADD COLUMN action_type TEXT;")
     if "submitted_position_qty" not in order_cols:
         conn.execute("ALTER TABLE orders ADD COLUMN submitted_position_qty REAL;")
     if "processed_at" not in order_cols:
@@ -213,6 +218,8 @@ def init_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE runs ADD COLUMN metrics_json TEXT;")
     if "bar_ts" not in run_cols:
         conn.execute("ALTER TABLE runs ADD COLUMN bar_ts TEXT;")
+    if "strategy_version" not in run_cols:
+        conn.execute("ALTER TABLE runs ADD COLUMN strategy_version TEXT;")
 
     conn.commit()
 
@@ -250,11 +257,12 @@ def get_state(conn: sqlite3.Connection, current_equity: float | None = None) -> 
     if trades_today_date != today:
         trades_today = 0
         trades_today_date = today
+        consecutive_losses = 0
         daily_start_equity = current_equity
         daily_start_equity_date = today
         conn.execute(
-            "UPDATE state SET trades_today=?, trades_today_date=?, daily_start_equity=?, daily_start_equity_date=? WHERE id=1;",
-            (trades_today, trades_today_date, daily_start_equity, daily_start_equity_date),
+            "UPDATE state SET trades_today=?, trades_today_date=?, consecutive_losses=?, daily_start_equity=?, daily_start_equity_date=? WHERE id=1;",
+            (trades_today, trades_today_date, consecutive_losses, daily_start_equity, daily_start_equity_date),
         )
         conn.commit()
     elif daily_start_equity is None and current_equity is not None:
@@ -356,15 +364,32 @@ def record_run(
     reasons: str | None = None,
     metrics_json: str | None = None,
     bar_ts: str | None = None,
+    strategy_version: str | None = None,
 ) -> None:
     conn.execute(
         """
         INSERT INTO runs (
-            ts, symbol, price, sma_fast, sma_slow, signal, desired_action, position_qty, equity, cash, note, reasons, metrics_json, bar_ts
+            ts, symbol, price, sma_fast, sma_slow, signal, desired_action, position_qty, equity, cash, note, reasons, metrics_json, bar_ts, strategy_version
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """,
-        (ts, symbol, price, sma_fast, sma_slow, signal, desired_action, position_qty, equity, cash, note, reasons, metrics_json, bar_ts),
+        (
+            ts,
+            symbol,
+            price,
+            sma_fast,
+            sma_slow,
+            signal,
+            desired_action,
+            position_qty,
+            equity,
+            cash,
+            note,
+            reasons,
+            metrics_json,
+            bar_ts,
+            strategy_version,
+        ),
     )
     conn.commit()
 
@@ -380,6 +405,7 @@ def record_order_submission(
     filled_avg_price: float | None,
     filled_qty: float | None,
     intent: str | None,
+    action_type: str | None,
     notes: str | None,
     submitted_position_qty: float | None,
     filled_at: str | None = None,
@@ -387,9 +413,9 @@ def record_order_submission(
     conn.execute(
         """
         INSERT INTO orders (
-            ts, symbol, side, qty, order_id, status, filled_avg_price, filled_qty, intent, notes, submitted_position_qty, processed_at, filled_at
+            ts, symbol, side, qty, order_id, status, filled_avg_price, filled_qty, intent, action_type, notes, submitted_position_qty, processed_at, filled_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?);
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?);
         """,
         (
             ts,
@@ -401,6 +427,7 @@ def record_order_submission(
             filled_avg_price,
             filled_qty,
             intent,
+            action_type,
             notes,
             submitted_position_qty,
             filled_at,
@@ -436,7 +463,7 @@ def mark_order_processed(conn: sqlite3.Connection, order_id: str, processed_at: 
 def get_orders_requiring_sync(conn: sqlite3.Connection, symbol: str) -> list[OrderRecord]:
     rows = conn.execute(
         """
-        SELECT id, ts, symbol, side, qty, order_id, status, filled_avg_price, filled_qty, intent, notes, submitted_position_qty, processed_at, filled_at
+        SELECT id, ts, symbol, side, qty, order_id, status, filled_avg_price, filled_qty, intent, action_type, notes, submitted_position_qty, processed_at, filled_at
         FROM orders
         WHERE symbol=?
           AND (
@@ -461,6 +488,7 @@ def get_orders_requiring_sync(conn: sqlite3.Connection, symbol: str) -> list[Ord
             filled_avg_price=row["filled_avg_price"],
             filled_qty=row["filled_qty"],
             intent=row["intent"],
+            action_type=row["action_type"],
             notes=row["notes"],
             submitted_position_qty=row["submitted_position_qty"],
             processed_at=row["processed_at"],

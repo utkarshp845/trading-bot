@@ -69,6 +69,7 @@ def main() -> int:
         atr_period=14,
         atr_max_pct=0.01,
         volume_ma_period=20,
+        volume_min_multiplier=0.8,
         trail_atr_multiplier=1.5,
         max_bars_in_trade=12,
     )
@@ -82,8 +83,9 @@ def main() -> int:
         RiskConfig(
             max_trades_per_day=5,
             max_daily_drawdown_pct=0.01,
+            max_daily_loss=500.0,
             max_consecutive_losses=3,
-            stale_bar_max_minutes=15,
+            max_bar_age_seconds=15 * 60,
             max_position_notional_pct=0.10,
         ),
         trades_today=0,
@@ -112,6 +114,7 @@ def main() -> int:
         reasons=";".join(reasons),
         metrics_json="{}",
         bar_ts=metrics.get("bar_ts"),
+        strategy_version=os.getenv("STRATEGY_VERSION", "validate"),
     )
     record_event(
         conn,
