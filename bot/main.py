@@ -383,13 +383,32 @@ def main():
     pos_state, pos_qty = sync_position_state_with_broker(conn, trading, symbol, logger)
 
     market_open = is_market_open(trading)
-    if market_open is None:
+    used_et_market_fallback = False
+    if market_open is None and _env_flag("ALLOW_ET_MARKET_CLOCK_FALLBACK", False):
         market_open = is_market_open_now_et()
+        used_et_market_fallback = True
 
-    if not market_open:
-        note = "market_closed"
-        logger.info("Market closed. Recording HOLD and exiting.")
-        emit_event(conn, ts, "INFO", "market_closed", symbol, "Market is closed; holding.", None)
+    if market_open is None or not market_open:
+        note = "market_clock_unavailable" if market_open is None else "market_closed"
+        message = (
+            "Market clock unavailable; holding to avoid trading outside the session."
+            if market_open is None
+            else "Market is closed; holding."
+        )
+        logger.info(
+            "Market clock unavailable. Recording HOLD and exiting."
+            if market_open is None
+            else "Market closed. Recording HOLD and exiting."
+        )
+        emit_event(
+            conn,
+            ts,
+            "WARN" if market_open is None else "INFO",
+            "market_clock_unavailable" if market_open is None else "market_closed",
+            symbol,
+            message,
+            {"et_fallback_used": used_et_market_fallback} if market_open is None else None,
+        )
         record_run(conn, ts, symbol, None, None, None, "HOLD", "HOLD", pos_qty, equity, cash, note, strategy_version=strategy_version)
         append_csv(
             LOGS_DIR / "equity.csv",
@@ -422,6 +441,7 @@ def main():
         atr_max_pct=atr_max_pct,
         volume_ma_period=volume_ma_period,
         volume_min_multiplier=volume_min_multiplier,
+        timeframe_minutes=timeframe_minutes,
         trail_atr_multiplier=trail_atr_multiplier,
         max_bars_in_trade=max_bars_in_trade,
     )

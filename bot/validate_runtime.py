@@ -8,6 +8,7 @@ import sys
 
 import pandas as pd
 from dotenv import load_dotenv
+from zoneinfo import ZoneInfo
 
 from bot.metrics import closed_trade_summary
 from bot.paths import DATA_DIR, LOGS_DIR, REPORTS_DIR, ensure_runtime_dirs
@@ -16,6 +17,9 @@ from bot.report_monitor import main as report_monitor_main
 from bot.risk import RiskConfig, evaluate_entry_risk
 from bot.store import connect, init_db, record_event, record_run
 from bot.strategy_ma import StrategyConfig, compute_indicators, generate_signal
+
+
+ET = ZoneInfo("America/New_York")
 
 
 def check(condition: bool, ok: str, fail: str, failures: list[str]) -> None:
@@ -70,6 +74,7 @@ def main() -> int:
         atr_max_pct=0.01,
         volume_ma_period=20,
         volume_min_multiplier=0.8,
+        timeframe_minutes=5,
         trail_atr_multiplier=1.5,
         max_bars_in_trade=12,
     )
@@ -131,7 +136,7 @@ def main() -> int:
     report_monitor_main()
 
     check((REPORTS_DIR / "monitor_latest.md").exists(), "Monitor report generated.", "Monitor report was not generated.", failures)
-    today_name = f"daily_{datetime.now().date().isoformat()}.md"
+    today_name = f"daily_{datetime.now(ET).date().isoformat()}.md"
     check((REPORTS_DIR / today_name).exists(), "Daily report generated.", "Daily report was not generated.", failures)
 
     summary = closed_trade_summary(pd.DataFrame())

@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -24,6 +24,7 @@ class StrategyConfig:
     volume_ma_period: int
     volume_min_multiplier: float
 
+    timeframe_minutes: int
     trail_atr_multiplier: float
     max_bars_in_trade: int
 
@@ -56,7 +57,7 @@ def compute_indicators(df: pd.DataFrame, cfg: StrategyConfig) -> pd.DataFrame:
     return out
 
 
-def _in_valid_trade_window_et(ts) -> bool:
+def _in_valid_trade_window_et(ts, timeframe_minutes: int) -> bool:
     """
     Valid entry windows:
       - 09:40 to 11:30 ET
@@ -68,9 +69,11 @@ def _in_valid_trade_window_et(ts) -> bool:
     if ts.tzinfo is None:
         ts = ts.tz_localize("UTC")
 
-    ts_et = ts.tz_convert(ET)
-    hour = ts_et.hour
-    minute = ts_et.minute
+    # Alpaca bar timestamps mark the bar open. We trade off the completed bar,
+    # so the time window should be checked against the bar close instead.
+    bar_close_et = (ts + timedelta(minutes=timeframe_minutes)).tz_convert(ET)
+    hour = bar_close_et.hour
+    minute = bar_close_et.minute
     hhmm = hour * 100 + minute
 
     in_morning = 940 <= hhmm <= 1130
@@ -101,7 +104,8 @@ def generate_signal(df: pd.DataFrame, cfg: StrategyConfig) -> tuple[str, dict, l
         "volume": float(last["volume"]) if pd.notna(last["volume"]) else None,
         "volume_ma": float(last["volume_ma"]) if pd.notna(last["volume_ma"]) else None,
         "bar_ts": str(last_ts) if last_ts is not None else None,
-        "time_window_ok": _in_valid_trade_window_et(last_ts),
+        "bar_close_ts": str(last_ts + timedelta(minutes=cfg.timeframe_minutes)) if last_ts is not None else None,
+        "time_window_ok": _in_valid_trade_window_et(last_ts, cfg.timeframe_minutes),
     }
 
     required = ["price", "sma_fast", "sma_slow", "adx", "atr", "atr_pct", "volume", "volume_ma"]
