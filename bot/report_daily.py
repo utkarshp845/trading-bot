@@ -9,7 +9,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from zoneinfo import ZoneInfo
 
-from bot.metrics import closed_trade_summary, load_table_df, max_drawdown
+from bot.metrics import add_condition_buckets, best_worst_conditions, closed_trade_summary, load_table_df, max_drawdown, summarize_by_group
 from bot.paths import DATA_DIR, LOGS_DIR, REPORTS_DIR, ensure_runtime_dirs
 
 
@@ -76,6 +76,20 @@ def _fmt_duration(seconds: float | None) -> str:
     if minutes > 0:
         return f"{minutes}m {secs}s"
     return f"{secs}s"
+
+
+def _append_group_section(lines: list[str], title: str, rows: list[dict]) -> None:
+    lines.append("")
+    lines.append(title)
+    if not rows:
+        lines.append("- No data yet.")
+        return
+    for row in rows[:5]:
+        pf = "n/a" if row["profit_factor"] is None else f"{row['profit_factor']:.2f}"
+        win_rate = "n/a" if row["win_rate"] is None else f"{row['win_rate'] * 100:.1f}%"
+        lines.append(
+            f"- {row['bucket']}: trades={row['trade_count']} net={_fmt_money(row['net_pnl'])} avg={_fmt_money(row['avg_pnl'])} win={win_rate} pf={pf}"
+        )
 
 
 def _split_reason_tokens(*values: object) -> list[str]:
@@ -200,8 +214,11 @@ def main():
         closed = closed.dropna(subset=["exit_ts"]).sort_values("exit_ts")
         closed["exit_ts_et"] = closed["exit_ts"].dt.tz_convert(ET)
         closed["date_et"] = closed["exit_ts_et"].dt.date.astype(str)
-        closed["hold_seconds"] = (closed["exit_ts"] - closed["entry_ts"]).dt.total_seconds()
+        if "hold_seconds" not in closed.columns:
+            closed["hold_seconds"] = (closed["exit_ts"] - closed["entry_ts"]).dt.total_seconds()
         today_closed = closed[closed["date_et"] == report_date_et]
+        today_closed = add_condition_buckets(today_closed)
+        closed = add_condition_buckets(closed)
         today_summary = closed_trade_summary(today_closed)
         overall_summary = closed_trade_summary(closed)
         avg_hold_seconds = float(today_closed["hold_seconds"].dropna().mean()) if not today_closed.empty and not today_closed["hold_seconds"].dropna().empty else None
@@ -261,6 +278,24 @@ def main():
             lines.append(
                 f"- {row.side} qty={row.qty} entry={_fmt_money(row.entry_price)} exit={_fmt_money(row.exit_price)} pnl={_fmt_money(row.pnl)} hold={_fmt_duration(getattr(row, 'hold_seconds', None))} reason={row.exit_reason or 'n/a'}"
             )
+
+    if not today_closed.empty:
+        _append_group_section(lines, "## Performance By Session", summarize_by_group(today_closed, "session_bucket"))
+        _append_group_section(lines, "## Performance By Side", summarize_by_group(today_closed, "entry_signal_side"))
+        _append_group_section(lines, "## Performance By ADX Bucket", summarize_by_group(today_closed, "adx_bucket"))
+        _append_group_section(lines, "## Performance By ATR Bucket", summarize_by_group(today_closed, "atr_bucket"))
+        _append_group_section(lines, "## Performance By Volume Ratio Bucket", summarize_by_group(today_closed, "volume_ratio_bucket"))
+        _append_group_section(lines, "## Performance By Hold Bucket", summarize_by_group(today_closed, "hold_bucket"))
+        best_lines, worst_lines = best_worst_conditions(
+            today_closed,
+            ["session_bucket", "entry_signal_side", "adx_bucket", "atr_bucket", "volume_ratio_bucket", "hold_bucket"],
+        )
+        lines.append("")
+        lines.append("## Best Conditions")
+        lines.extend(best_lines if best_lines else ["- No repeatable condition winners yet."])
+        lines.append("")
+        lines.append("## Worst Conditions")
+        lines.extend(worst_lines if worst_lines else ["- No repeatable condition losers yet."])
 
     lines.extend(
         [

@@ -26,3 +26,12 @@ services:
       - ./logs:/app/logs
       - ./reports:/app/reports
     command: ["python", "-m", "bot.report_monitor"]
+  research:
+    build: .
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./reports:/app/reports
+    command: ["python", "-m", "bot.research"]

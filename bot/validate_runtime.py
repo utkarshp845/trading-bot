@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from bot.metrics import closed_trade_summary
 from bot.paths import DATA_DIR, LOGS_DIR, REPORTS_DIR, ensure_runtime_dirs
+from bot.research import run_replay
 from bot.report_daily import main as report_daily_main
 from bot.report_monitor import main as report_monitor_main
 from bot.risk import RiskConfig, evaluate_entry_risk
@@ -101,6 +102,9 @@ def main() -> int:
         position_notional=1000,
     )
     check(risk.allow_entries, "Risk evaluation allows a healthy sample entry.", "Risk evaluation unexpectedly blocked a healthy sample entry.", failures)
+    replay_equity, replay_trades = run_replay(bars, cfg, sizing_mode="fixed", base_qty=1, starting_equity=100000.0)
+    check(not replay_equity.empty, "Replay engine produced an equity curve.", "Replay engine failed to produce an equity curve.", failures)
+    check(isinstance(replay_trades, list), "Replay engine returned trade records.", "Replay engine trade output is invalid.", failures)
 
     ts = datetime.now(timezone.utc).isoformat()
     record_run(

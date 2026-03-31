@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import json
+import math
 import os
 import time
 import pandas as pd
@@ -38,11 +39,12 @@ from bot.store import (
     record_order_submission,
     record_run,
     set_consecutive_losses,
+    set_last_entry_signal,
     set_last_trade,
     upsert_position_state,
     update_order_status,
 )
-from bot.strategy_ma import StrategyConfig, compute_indicators, generate_signal
+from bot.strategy_ma import StrategyConfig, compute_indicators, generate_signal, parse_entry_windows
 
 
 TERMINAL_ORDER_STATUSES = {"FILLED", "CANCELED", "CANCELLED", "REJECTED", "EXPIRED"}
@@ -111,6 +113,97 @@ def _env_flag(name: str, default: bool) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_optional_float(name: str) -> float | None:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return None
+    return float(raw)
+
+
+def _env_optional_int(name: str) -> int | None:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return None
+    return int(raw)
+
+
+def _entry_metrics_payload(signal: str, metrics: dict) -> dict:
+    return {
+        "signal": signal,
+        "bar_ts": metrics.get("bar_ts"),
+        "bar_close_ts": metrics.get("bar_close_ts"),
+        "entry_signal_side": "long" if signal == "LONG" else "short" if signal == "SHORT" else None,
+        "adx": metrics.get("adx"),
+        "atr_pct": metrics.get("atr_pct"),
+        "volume_ratio": metrics.get("volume_ratio"),
+        "sma_spread_pct": metrics.get("sma_spread_pct"),
+        "entry_window_bucket": metrics.get("entry_window_bucket"),
+        "signal_strength": metrics.get("signal_strength"),
+        "decision_price": metrics.get("price"),
+    }
+
+
+def _entry_meta_from_order(order, filled_avg: float | None) -> dict:
+    try:
+        payload = json.loads(order.entry_metrics_json) if order.entry_metrics_json else {}
+    except json.JSONDecodeError:
+        payload = {}
+
+    decision_price = _safe_float(payload.get("decision_price"))
+    slippage = None
+    if decision_price is not None and filled_avg is not None:
+        if payload.get("entry_signal_side") == "short":
+            slippage = filled_avg - decision_price
+        else:
+            slippage = decision_price - filled_avg
+    payload["realized_slippage_estimate"] = slippage
+    return payload
+
+
+def _compute_entry_qty(
+    mode: str,
+    base_qty: int,
+    equity: float | None,
+    last_price: float | None,
+    atr_value: float | None,
+    max_position_notional_pct: float,
+) -> int:
+    if base_qty <= 0:
+        return 0
+    if mode == "fixed" or equity is None or last_price is None or last_price <= 0:
+        return base_qty
+
+    cap_notional_pct = float(os.getenv("TARGET_POSITION_NOTIONAL_PCT", str(max_position_notional_pct)))
+    if max_position_notional_pct > 0:
+        cap_notional_pct = min(cap_notional_pct, max_position_notional_pct)
+    capped_qty = math.floor((equity * cap_notional_pct) / last_price) if cap_notional_pct > 0 else base_qty
+
+    if mode == "notional_cap":
+        return max(0, capped_qty)
+
+    if mode == "atr_risk":
+        risk_pct = float(os.getenv("ATR_RISK_PER_TRADE_PCT", "0.0025"))
+        if atr_value is None or atr_value <= 0:
+            return 0
+        atr_qty = math.floor((equity * risk_pct) / atr_value)
+        if capped_qty > 0:
+            atr_qty = min(atr_qty, capped_qty)
+        return max(0, atr_qty)
+
+    return base_qty
+
+
+def _should_allow_reentry_during_cooldown(state, signal: str, current_strength: float | None) -> bool:
+    if not _env_flag("REENTRY_REQUIRES_SIGNAL_STRENGTH_IMPROVEMENT", False):
+        return False
+    if current_strength is None or state.last_entry_signal_strength is None:
+        return False
+    if signal not in {"LONG", "SHORT"}:
+        return False
+    min_delta = float(os.getenv("REENTRY_MIN_SIGNAL_STRENGTH_DELTA", "0.0"))
+    return current_strength >= (state.last_entry_signal_strength + min_delta)
 
 
 def emit_event(conn, ts: str, level: str, event_type: str, symbol: str | None, message: str | None, payload: dict | None = None) -> None:
@@ -194,6 +287,15 @@ def sync_position_state_with_broker(conn, trading, symbol: str, logger):
         entry_ts,
         highest_price,
         lowest_price,
+        entry_bar_ts=pos_state.entry_bar_ts,
+        entry_signal_side=pos_state.entry_signal_side,
+        entry_adx=pos_state.entry_adx,
+        entry_atr_pct=pos_state.entry_atr_pct,
+        entry_volume_ratio=pos_state.entry_volume_ratio,
+        entry_sma_spread_pct=pos_state.entry_sma_spread_pct,
+        entry_window_bucket=pos_state.entry_window_bucket,
+        entry_signal_strength=pos_state.entry_signal_strength,
+        realized_slippage_estimate=pos_state.realized_slippage_estimate,
     )
 
     return get_position_state(conn, symbol), float(broker_position["qty"])
@@ -220,7 +322,7 @@ def reconcile_submitted_orders(conn, trading, symbol: str, logger) -> None:
         if status == "FILLED" and order.processed_at is None:
             processed_at = utc_iso_now()
             position_before = get_position_state(conn, symbol)
-            exit_ts = filled_at or order.ts
+            fill_ts = filled_at or order.ts
             emit_event(
                 conn,
                 processed_at,
@@ -239,6 +341,32 @@ def reconcile_submitted_orders(conn, trading, symbol: str, logger) -> None:
                 },
             )
 
+            if order.intent == "entry":
+                entry_meta = _entry_meta_from_order(order, filled_avg)
+                upsert_position_state(
+                    conn,
+                    symbol,
+                    "long" if order.side.lower() == "buy" else "short",
+                    filled_avg if filled_avg is not None else position_before.entry_price,
+                    fill_ts,
+                    filled_avg if order.side.lower() == "buy" else position_before.highest_price,
+                    filled_avg if order.side.lower() == "sell" else position_before.lowest_price,
+                    entry_bar_ts=entry_meta.get("bar_close_ts") or entry_meta.get("bar_ts"),
+                    entry_signal_side=entry_meta.get("entry_signal_side"),
+                    entry_adx=_safe_float(entry_meta.get("adx")),
+                    entry_atr_pct=_safe_float(entry_meta.get("atr_pct")),
+                    entry_volume_ratio=_safe_float(entry_meta.get("volume_ratio")),
+                    entry_sma_spread_pct=_safe_float(entry_meta.get("sma_spread_pct")),
+                    entry_window_bucket=entry_meta.get("entry_window_bucket"),
+                    entry_signal_strength=_safe_float(entry_meta.get("signal_strength")),
+                    realized_slippage_estimate=_safe_float(entry_meta.get("realized_slippage_estimate")),
+                )
+                set_last_entry_signal(
+                    conn,
+                    _safe_float(entry_meta.get("signal_strength")),
+                    entry_meta.get("entry_signal_side"),
+                )
+
             if order.intent == "exit":
                 exit_price = filled_avg
                 realized_qty = filled_qty if filled_qty is not None else order.qty
@@ -254,12 +382,19 @@ def reconcile_submitted_orders(conn, trading, symbol: str, logger) -> None:
                         pnl = (float(position_before.entry_price) - exit_price) * float(realized_qty)
                         return_pct = (float(position_before.entry_price) - exit_price) / float(position_before.entry_price)
 
+                    hold_seconds = None
+                    if position_before.entry_ts:
+                        entry_dt = parse_ts(position_before.entry_ts)
+                        exit_dt = parse_ts(fill_ts)
+                        if entry_dt is not None and exit_dt is not None:
+                            hold_seconds = (exit_dt - entry_dt).total_seconds()
+
                     record_closed_trade(
                         conn,
                         symbol,
                         position_before.side,
                         position_before.entry_ts,
-                        exit_ts,
+                        fill_ts,
                         float(position_before.entry_price),
                         exit_price,
                         float(realized_qty),
@@ -268,6 +403,16 @@ def reconcile_submitted_orders(conn, trading, symbol: str, logger) -> None:
                         None,
                         order.notes,
                         None,
+                        entry_bar_ts=position_before.entry_bar_ts,
+                        exit_bar_ts=fill_ts,
+                        entry_signal_side=position_before.entry_signal_side,
+                        entry_adx=position_before.entry_adx,
+                        entry_atr_pct=position_before.entry_atr_pct,
+                        entry_volume_ratio=position_before.entry_volume_ratio,
+                        entry_sma_spread_pct=position_before.entry_sma_spread_pct,
+                        entry_window_bucket=position_before.entry_window_bucket,
+                        hold_seconds=hold_seconds,
+                        realized_slippage_estimate=position_before.realized_slippage_estimate,
                     )
 
                     state_after_trade = get_state(conn)
@@ -277,7 +422,7 @@ def reconcile_submitted_orders(conn, trading, symbol: str, logger) -> None:
                         set_consecutive_losses(conn, state_after_trade.consecutive_losses + 1)
 
             sync_position_state_with_broker(conn, trading, symbol, logger)
-            set_last_trade(conn, exit_ts)
+            set_last_trade(conn, fill_ts)
             if order.intent == "entry":
                 increment_trades_today(conn)
             mark_order_processed(conn, order.order_id, processed_at)
@@ -314,17 +459,6 @@ def main():
     symbol = os.getenv("SYMBOL", "SPY").strip().upper()
     qty = int(os.getenv("QTY", "1"))
     timeframe_minutes = int(os.getenv("TIMEFRAME_MINUTES", "5"))
-
-    sma_fast = int(os.getenv("SMA_FAST", "20"))
-    sma_slow = int(os.getenv("SMA_SLOW", "50"))
-    adx_period = int(os.getenv("ADX_PERIOD", "14"))
-    adx_threshold = float(os.getenv("ADX_THRESHOLD", "20"))
-    atr_period = int(os.getenv("ATR_PERIOD", "14"))
-    atr_max_pct = float(os.getenv("ATR_MAX_PCT", "0.0045"))
-    volume_ma_period = int(os.getenv("VOLUME_MA_PERIOD", "20"))
-    volume_min_multiplier = float(os.getenv("VOLUME_MIN_MULTIPLIER", os.getenv("VOLUME_THRESHOLD_MULTIPLIER", "0.8")))
-    trail_atr_multiplier = float(os.getenv("TRAIL_ATR_MULTIPLIER", "1.5"))
-    max_bars_in_trade = int(os.getenv("MAX_BARS_IN_TRADE", "12"))
     cooldown_bars = int(os.getenv("COOLDOWN_BARS", "2"))
     max_trades_per_day = int(os.getenv("MAX_TRADES_PER_DAY", "5"))
     max_daily_drawdown_pct = float(os.getenv("MAX_DAILY_DRAWDOWN_PCT", "0.01"))
@@ -344,12 +478,14 @@ def main():
     )
     max_position_notional_pct = float(os.getenv("MAX_POSITION_NOTIONAL_PCT", "0.02"))
     startup_delay_seconds = max(0, int(os.getenv("STARTUP_DELAY_SECONDS", "20")))
+    sizing_mode = os.getenv("POSITION_SIZING_MODE", "fixed").strip().lower() or "fixed"
+    reversal_signal_strength_min = float(os.getenv("REVERSAL_SIGNAL_STRENGTH_MIN", "0"))
 
     ts = utc_iso_now()
     logger.info(
         f"Run start ts={ts} symbol={symbol} tf={timeframe_minutes}m qty={qty} "
         f"strategy_version={strategy_version} stale_bar_check={'enabled' if stale_bar_checks_enabled else 'disabled'} "
-        f"max_bar_age_seconds={max_bar_age_seconds} startup_delay={startup_delay_seconds}s"
+        f"max_bar_age_seconds={max_bar_age_seconds} startup_delay={startup_delay_seconds}s sizing_mode={sizing_mode}"
     )
 
     trading, data = make_clients()
@@ -369,6 +505,7 @@ def main():
             "stale_bar_check_enabled": stale_bar_checks_enabled,
             "max_bar_age_seconds": max_bar_age_seconds,
             "startup_delay_seconds": startup_delay_seconds,
+            "position_sizing_mode": sizing_mode,
         },
     )
 
@@ -432,18 +569,43 @@ def main():
         logger.info("Run complete.")
         return
 
+    default_windows = ((940, 1130), (1400, 1545))
     cfg = StrategyConfig(
-        sma_fast=sma_fast,
-        sma_slow=sma_slow,
-        adx_period=adx_period,
-        adx_threshold=adx_threshold,
-        atr_period=atr_period,
-        atr_max_pct=atr_max_pct,
-        volume_ma_period=volume_ma_period,
-        volume_min_multiplier=volume_min_multiplier,
+        sma_fast=int(os.getenv("SMA_FAST", "20")),
+        sma_slow=int(os.getenv("SMA_SLOW", "50")),
+        adx_period=int(os.getenv("ADX_PERIOD", "14")),
+        adx_threshold=float(os.getenv("ADX_THRESHOLD", "20")),
+        atr_period=int(os.getenv("ATR_PERIOD", "14")),
+        atr_max_pct=float(os.getenv("ATR_MAX_PCT", "0.0045")),
+        volume_ma_period=int(os.getenv("VOLUME_MA_PERIOD", "20")),
+        volume_min_multiplier=float(os.getenv("VOLUME_MIN_MULTIPLIER", os.getenv("VOLUME_THRESHOLD_MULTIPLIER", "0.8"))),
         timeframe_minutes=timeframe_minutes,
-        trail_atr_multiplier=trail_atr_multiplier,
-        max_bars_in_trade=max_bars_in_trade,
+        trail_atr_multiplier=float(os.getenv("TRAIL_ATR_MULTIPLIER", "1.5")),
+        max_bars_in_trade=int(os.getenv("MAX_BARS_IN_TRADE", "12")),
+        long_adx_threshold=_env_optional_float("LONG_ADX_THRESHOLD"),
+        short_adx_threshold=_env_optional_float("SHORT_ADX_THRESHOLD"),
+        long_atr_max_pct=_env_optional_float("LONG_ATR_MAX_PCT"),
+        short_atr_max_pct=_env_optional_float("SHORT_ATR_MAX_PCT"),
+        long_volume_min_multiplier=_env_optional_float("LONG_VOLUME_MIN_MULTIPLIER"),
+        short_volume_min_multiplier=_env_optional_float("SHORT_VOLUME_MIN_MULTIPLIER"),
+        min_sma_spread_atr_mult=float(os.getenv("MIN_SMA_SPREAD_ATR_MULT", "0")),
+        min_sma_spread_pct=float(os.getenv("MIN_SMA_SPREAD_PCT", "0")),
+        use_vwap_filter=_env_flag("USE_VWAP_FILTER", False),
+        min_price_distance_from_vwap_pct=float(os.getenv("MIN_PRICE_DISTANCE_FROM_VWAP_PCT", "0")),
+        use_session_open_filter=_env_flag("USE_SESSION_OPEN_FILTER", False),
+        min_price_distance_from_open_pct=float(os.getenv("MIN_PRICE_DISTANCE_FROM_OPEN_PCT", "0")),
+        entry_windows=parse_entry_windows(os.getenv("ENTRY_WINDOWS"), default_windows),
+        long_entry_windows=parse_entry_windows(os.getenv("LONG_ENTRY_WINDOWS"), default_windows),
+        short_entry_windows=parse_entry_windows(os.getenv("SHORT_ENTRY_WINDOWS"), default_windows),
+        long_trail_atr_multiplier=_env_optional_float("LONG_TRAIL_ATR_MULTIPLIER"),
+        short_trail_atr_multiplier=_env_optional_float("SHORT_TRAIL_ATR_MULTIPLIER"),
+        long_max_bars_in_trade=_env_optional_int("LONG_MAX_BARS_IN_TRADE"),
+        short_max_bars_in_trade=_env_optional_int("SHORT_MAX_BARS_IN_TRADE"),
+        enable_breakeven_stop=_env_flag("ENABLE_BREAKEVEN_STOP", False),
+        breakeven_after_atr_multiple=float(os.getenv("BREAKEVEN_AFTER_ATR_MULTIPLE", "1.0")),
+        enable_profit_lock=_env_flag("ENABLE_PROFIT_LOCK", False),
+        profit_lock_after_atr_multiple=float(os.getenv("PROFIT_LOCK_AFTER_ATR_MULTIPLE", "2.0")),
+        profit_lock_atr_multiple=float(os.getenv("PROFIT_LOCK_ATR_MULTIPLE", "0.5")),
     )
 
     bars2 = compute_indicators(bars, cfg)
@@ -467,6 +629,7 @@ def main():
     v_volume = metrics.get("volume")
     v_volume_ma = metrics.get("volume_ma")
     bar_ts = metrics.get("bar_ts")
+    signal_strength = metrics.get("signal_strength")
 
     if pos_qty > 0 and last_price is not None:
         current_high = pos_state.highest_price if pos_state.highest_price is not None else last_price
@@ -479,6 +642,15 @@ def main():
             pos_state.entry_ts,
             new_high,
             pos_state.lowest_price,
+            entry_bar_ts=pos_state.entry_bar_ts,
+            entry_signal_side=pos_state.entry_signal_side,
+            entry_adx=pos_state.entry_adx,
+            entry_atr_pct=pos_state.entry_atr_pct,
+            entry_volume_ratio=pos_state.entry_volume_ratio,
+            entry_sma_spread_pct=pos_state.entry_sma_spread_pct,
+            entry_window_bucket=pos_state.entry_window_bucket,
+            entry_signal_strength=pos_state.entry_signal_strength,
+            realized_slippage_estimate=pos_state.realized_slippage_estimate,
         )
         pos_state = get_position_state(conn, symbol)
     elif pos_qty < 0 and last_price is not None:
@@ -492,6 +664,15 @@ def main():
             pos_state.entry_ts,
             pos_state.highest_price,
             new_low,
+            entry_bar_ts=pos_state.entry_bar_ts,
+            entry_signal_side=pos_state.entry_signal_side,
+            entry_adx=pos_state.entry_adx,
+            entry_atr_pct=pos_state.entry_atr_pct,
+            entry_volume_ratio=pos_state.entry_volume_ratio,
+            entry_sma_spread_pct=pos_state.entry_sma_spread_pct,
+            entry_window_bucket=pos_state.entry_window_bucket,
+            entry_signal_strength=pos_state.entry_signal_strength,
+            realized_slippage_estimate=pos_state.realized_slippage_estimate,
         )
         pos_state = get_position_state(conn, symbol)
 
@@ -508,9 +689,19 @@ def main():
             intent = "entry"
     elif pos_qty > 0:
         exit_reason = None
+        trail_atr_multiplier = cfg.trail_atr_multiplier_for("long")
+        max_bars_in_trade = cfg.max_bars_in_trade_for("long")
 
         if last_price is not None and v_atr is not None and pos_state.highest_price is not None:
             trailing_stop = float(pos_state.highest_price) - (trail_atr_multiplier * float(v_atr))
+            if cfg.enable_breakeven_stop and pos_state.entry_price is not None and float(last_price) >= (
+                float(pos_state.entry_price) + (cfg.breakeven_after_atr_multiple * float(v_atr))
+            ):
+                trailing_stop = max(trailing_stop, float(pos_state.entry_price))
+            if cfg.enable_profit_lock and pos_state.entry_price is not None and float(last_price) >= (
+                float(pos_state.entry_price) + (cfg.profit_lock_after_atr_multiple * float(v_atr))
+            ):
+                trailing_stop = max(trailing_stop, float(pos_state.entry_price) + (cfg.profit_lock_atr_multiple * float(v_atr)))
             if float(last_price) < trailing_stop:
                 desired_action = "SELL"
                 exit_reason = f"long_trailing_stop_hit({last_price}<{trailing_stop})"
@@ -527,7 +718,7 @@ def main():
                 desired_action = "SELL"
                 exit_reason = f"long_time_stop_hit({trade_bars}>={max_bars_in_trade})"
 
-        if desired_action == "HOLD" and signal == "SHORT":
+        if desired_action == "HOLD" and signal == "SHORT" and float(signal_strength or 0.0) >= reversal_signal_strength_min:
             desired_action = "SELL"
             exit_reason = "long_trend_reversal"
 
@@ -536,9 +727,19 @@ def main():
             intent = "exit"
     elif pos_qty < 0:
         exit_reason = None
+        trail_atr_multiplier = cfg.trail_atr_multiplier_for("short")
+        max_bars_in_trade = cfg.max_bars_in_trade_for("short")
 
         if last_price is not None and v_atr is not None and pos_state.lowest_price is not None:
             trailing_stop = float(pos_state.lowest_price) + (trail_atr_multiplier * float(v_atr))
+            if cfg.enable_breakeven_stop and pos_state.entry_price is not None and float(last_price) <= (
+                float(pos_state.entry_price) - (cfg.breakeven_after_atr_multiple * float(v_atr))
+            ):
+                trailing_stop = min(trailing_stop, float(pos_state.entry_price))
+            if cfg.enable_profit_lock and pos_state.entry_price is not None and float(last_price) <= (
+                float(pos_state.entry_price) - (cfg.profit_lock_after_atr_multiple * float(v_atr))
+            ):
+                trailing_stop = min(trailing_stop, float(pos_state.entry_price) - (cfg.profit_lock_atr_multiple * float(v_atr)))
             if float(last_price) > trailing_stop:
                 desired_action = "BUY"
                 exit_reason = f"short_trailing_stop_hit({last_price}>{trailing_stop})"
@@ -555,7 +756,7 @@ def main():
                 desired_action = "BUY"
                 exit_reason = f"short_time_stop_hit({trade_bars}>={max_bars_in_trade})"
 
-        if desired_action == "HOLD" and signal == "LONG":
+        if desired_action == "HOLD" and signal == "LONG" and float(signal_strength or 0.0) >= reversal_signal_strength_min:
             desired_action = "BUY"
             exit_reason = "short_trend_reversal"
 
@@ -565,10 +766,12 @@ def main():
 
     action = desired_action
     pending_orders = has_pending_orders(conn, symbol)
+    order_qty = qty
 
     entering_long = pos_qty == 0 and desired_action == "BUY" and signal == "LONG"
     entering_short = pos_qty == 0 and desired_action == "SELL" and signal == "SHORT"
     if entering_long or entering_short:
+        order_qty = _compute_entry_qty(sizing_mode, qty, equity, _safe_float(last_price), _safe_float(v_atr), max_position_notional_pct)
         risk_eval = evaluate_entry_risk(
             RiskConfig(
                 max_trades_per_day=max_trades_per_day,
@@ -583,7 +786,7 @@ def main():
             daily_start_equity=state.daily_start_equity,
             current_equity=equity,
             last_bar_ts=bar_ts,
-            position_notional=(float(last_price) * qty) if last_price is not None else None,
+            position_notional=(float(last_price) * order_qty) if last_price is not None else None,
         )
         if not risk_eval.allow_entries:
             action = "HOLD"
@@ -598,19 +801,26 @@ def main():
                 {"risk_reasons": risk_eval.reasons, "signal": signal},
             )
 
+        if order_qty <= 0:
+            action = "HOLD"
+            note_parts.append("position_sizing_blocked")
+
         since = bars_since(state.last_trade_ts, bars2)
         if since is not None and since < cooldown_bars:
-            action = "HOLD"
-            note_parts.append("cooldown")
-            emit_event(
-                conn,
-                ts,
-                "WARN",
-                "entry_blocked_cooldown",
-                symbol,
-                "Entry blocked by cooldown.",
-                {"bars_since_last_trade": since, "cooldown_bars": cooldown_bars, "signal": signal},
-            )
+            if _should_allow_reentry_during_cooldown(state, signal, _safe_float(signal_strength)):
+                note_parts.append("cooldown_overridden_stronger_signal")
+            else:
+                action = "HOLD"
+                note_parts.append("cooldown")
+                emit_event(
+                    conn,
+                    ts,
+                    "WARN",
+                    "entry_blocked_cooldown",
+                    symbol,
+                    "Entry blocked by cooldown.",
+                    {"bars_since_last_trade": since, "cooldown_bars": cooldown_bars, "signal": signal},
+                )
 
     if pending_orders:
         action = "HOLD"
@@ -633,7 +843,7 @@ def main():
     logger.info(
         f"price={last_price} sma_fast={v_fast} sma_slow={v_slow} "
         f"adx={v_adx} atr={v_atr} atr_pct={v_atr_pct} volume={v_volume} volume_ma={v_volume_ma} "
-        f"signal={signal} pos_qty={pos_qty} desired_action={desired_action} "
+        f"signal={signal} signal_strength={signal_strength} pos_qty={pos_qty} desired_action={desired_action} "
         f"action={action} action_type={action_type} trades_today={state.trades_today} "
         f"consecutive_losses={state.consecutive_losses} note={note}"
     )
@@ -642,6 +852,7 @@ def main():
     executed_qty = None
     order_side_for_log = None
     order_intent = intent
+    entry_metrics_payload = _entry_metrics_payload(signal, metrics) if intent == "entry" else None
 
     if action == "BUY":
         if pos_qty < 0:
@@ -651,9 +862,9 @@ def main():
                 executed_qty = cover_qty
                 order_side_for_log = "buy"
                 order_intent = "exit"
-        elif pos_qty == 0:
-            order_info = place_market_order(trading, symbol, "buy", qty)
-            executed_qty = qty
+        elif pos_qty == 0 and order_qty > 0:
+            order_info = place_market_order(trading, symbol, "buy", order_qty)
+            executed_qty = order_qty
             order_side_for_log = "buy"
             order_intent = "entry"
     elif action == "SELL":
@@ -664,9 +875,9 @@ def main():
                 executed_qty = sell_qty
                 order_side_for_log = "sell"
                 order_intent = "exit"
-        elif pos_qty == 0:
-            order_info = place_market_order(trading, symbol, "sell", qty)
-            executed_qty = qty
+        elif pos_qty == 0 and order_qty > 0:
+            order_info = place_market_order(trading, symbol, "sell", order_qty)
+            executed_qty = order_qty
             order_side_for_log = "sell"
             order_intent = "entry"
 
@@ -722,6 +933,8 @@ def main():
             note,
             pos_qty,
             filled_at,
+            decision_signal=signal,
+            entry_metrics_json=json.dumps(entry_metrics_payload, sort_keys=True) if entry_metrics_payload is not None else None,
         )
         emit_event(
             conn,
@@ -739,6 +952,7 @@ def main():
                 "qty": executed_qty if executed_qty is not None else qty,
                 "filled_avg_price": filled_avg,
                 "filled_qty": filled_qty,
+                "signal_strength": signal_strength,
             },
         )
 

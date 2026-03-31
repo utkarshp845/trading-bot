@@ -46,17 +46,18 @@ def make_clients() -> tuple[TradingClient, StockHistoricalDataClient]:
     data = StockHistoricalDataClient(api_key=key, secret_key=secret)
     return trading, data
 
-def get_recent_bars(data_client: StockHistoricalDataClient, symbol: str, timeframe_minutes: int, limit: int = 200) -> pd.DataFrame:
-    """
-    Fetch recent bars. For SMA(50) on 5-min bars, 200 bars is plenty for warmup.
-    """
+def get_historical_bars(
+    data_client: StockHistoricalDataClient,
+    symbol: str,
+    timeframe_minutes: int,
+    start: datetime,
+    end: datetime,
+    limit: int | None = None,
+) -> pd.DataFrame:
     tf = TimeFrame(timeframe_minutes, TimeFrameUnit.Minute)
 
     # always use IEX feed (works on free accounts and avoids SIP-only errors)
     feed = DataFeed.IEX
-
-    end = datetime.now(timezone.utc)
-    start = end - timedelta(days=7)  # generous window to ensure enough bars even with market closures
 
     req = StockBarsRequest(
         symbol_or_symbols=symbol,
@@ -86,6 +87,15 @@ def get_recent_bars(data_client: StockHistoricalDataClient, symbol: str, timefra
 
     bars = bars.sort_index()
     return bars
+
+
+def get_recent_bars(data_client: StockHistoricalDataClient, symbol: str, timeframe_minutes: int, limit: int = 200) -> pd.DataFrame:
+    """
+    Fetch recent bars. For SMA(50) on 5-min bars, 200 bars is plenty for warmup.
+    """
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=7)
+    return get_historical_bars(data_client, symbol, timeframe_minutes, start=start, end=end, limit=limit)
 
 def get_position_qty(trading: TradingClient, symbol: str) -> float:
     try:

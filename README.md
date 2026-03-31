@@ -64,11 +64,19 @@ Generate the latest monitor report:
 docker compose run --rm monitor
 ```
 
+Run the research / replay report:
+
+```powershell
+docker compose run --rm research
+```
+
 Main outputs:
 
 - `reports/monitor_latest.md`
 - `reports/monitor_latest.json`
 - `reports/daily_YYYY-MM-DD.md`
+- `reports/research_latest.md`
+- `reports/research_latest.json`
 
 ## Repo Layout
 

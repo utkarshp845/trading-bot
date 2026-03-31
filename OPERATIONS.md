@@ -50,6 +50,19 @@ These summarize:
 - P&L by exit hour
 - recent closed trades
 
+## Research
+
+Run the historical replay / walk-forward report:
+
+```powershell
+docker compose run --rm research
+```
+
+Outputs:
+
+- `reports/research_latest.md`
+- `reports/research_latest.json`
+
 ## Normal Bot Run
 
 Run one bot cycle:

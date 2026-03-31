@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import pandas as pd
 from zoneinfo import ZoneInfo
 
-from bot.metrics import closed_trade_summary, load_table_df
+from bot.metrics import add_condition_buckets, best_worst_conditions, closed_trade_summary, load_table_df, summarize_by_group
 from bot.paths import DATA_DIR, REPORTS_DIR, ensure_runtime_dirs
 
 
@@ -41,6 +41,15 @@ def _fmt_ts(value) -> str:
 
 def _table(conn: sqlite3.Connection, name: str) -> pd.DataFrame:
     return load_table_df(conn, name)
+
+
+def _condition_lines(df: pd.DataFrame, column: str, prefix: str) -> list[str]:
+    lines: list[str] = []
+    for row in summarize_by_group(df, column)[:4]:
+        lines.append(
+            f"- {prefix} {row['bucket']}: trades={row['trade_count']} net={_fmt_money(row['net_pnl'])} avg={_fmt_money(row['avg_pnl'])}"
+        )
+    return lines
 
 
 def main() -> None:
@@ -80,6 +89,7 @@ def main() -> None:
         closed["exit_ts"] = _to_dt_utc(closed["exit_ts"])
         closed = closed.dropna(subset=["exit_ts"]).sort_values("exit_ts")
         closed["exit_hour_et"] = closed["exit_ts"].dt.tz_convert(ET).dt.hour
+        closed = add_condition_buckets(closed)
 
     latest_run = runs.iloc[-1] if not runs.empty else None
     latest_events = events.tail(20) if not events.empty else pd.DataFrame()
@@ -112,6 +122,19 @@ def main() -> None:
             recent_event_lines.append(
                 f"- {_fmt_ts(row.ts)} [{row.level}] {row.event_type}: {row.message or ''}".rstrip()
             )
+
+    condition_lines = []
+    if not closed.empty:
+        condition_lines.extend(_condition_lines(closed, "session_bucket", "session"))
+        condition_lines.extend(_condition_lines(closed, "entry_signal_side", "side"))
+        condition_lines.extend(_condition_lines(closed, "adx_bucket", "adx"))
+        best_lines, worst_lines = best_worst_conditions(
+            closed,
+            ["session_bucket", "entry_signal_side", "adx_bucket", "atr_bucket", "volume_ratio_bucket", "hold_bucket"],
+        )
+    else:
+        best_lines = []
+        worst_lines = []
 
     state_lines: list[str] = []
     if not state.empty:
@@ -201,6 +224,27 @@ def main() -> None:
         ]
     )
     lines.extend(recent_trade_lines if recent_trade_lines else ["- No closed trades yet."])
+    lines.extend(
+        [
+            "",
+            "## Condition Breakdown",
+        ]
+    )
+    lines.extend(condition_lines if condition_lines else ["- No condition data yet."])
+    lines.extend(
+        [
+            "",
+            "## Best Conditions",
+        ]
+    )
+    lines.extend(best_lines if best_lines else ["- No repeatable winners yet."])
+    lines.extend(
+        [
+            "",
+            "## Worst Conditions",
+        ]
+    )
+    lines.extend(worst_lines if worst_lines else ["- No repeatable losers yet."])
     lines.extend(
         [
             "",
