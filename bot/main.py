@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import json
-import math
 import os
 import time
 import pandas as pd
@@ -45,6 +44,7 @@ from bot.store import (
     update_order_status,
 )
 from bot.strategy_ma import StrategyConfig, compute_indicators, generate_signal, parse_entry_windows
+from bot.trade_controls import bars_since, compute_entry_qty, should_allow_reentry_during_cooldown
 
 
 TERMINAL_ORDER_STATUSES = {"FILLED", "CANCELED", "CANCELLED", "REJECTED", "EXPIRED"}
@@ -64,15 +64,6 @@ def is_market_open_now_et() -> bool:
     open_time = now.replace(hour=9, minute=30, second=0, microsecond=0)
     close_time = now.replace(hour=16, minute=0, second=0, microsecond=0)
     return open_time <= now < close_time
-
-
-def bars_since(last_trade_ts: str | None, bars: pd.DataFrame) -> int | None:
-    if not last_trade_ts or bars.empty:
-        return None
-    last_trade = parse_ts(last_trade_ts)
-    if last_trade is None:
-        return None
-    return int((bars.index > last_trade).sum())
 
 
 def bars_in_trade(entry_ts: str | None, bars: pd.DataFrame) -> int | None:
@@ -160,50 +151,6 @@ def _entry_meta_from_order(order, filled_avg: float | None) -> dict:
             slippage = decision_price - filled_avg
     payload["realized_slippage_estimate"] = slippage
     return payload
-
-
-def _compute_entry_qty(
-    mode: str,
-    base_qty: int,
-    equity: float | None,
-    last_price: float | None,
-    atr_value: float | None,
-    max_position_notional_pct: float,
-) -> int:
-    if base_qty <= 0:
-        return 0
-    if mode == "fixed" or equity is None or last_price is None or last_price <= 0:
-        return base_qty
-
-    cap_notional_pct = float(os.getenv("TARGET_POSITION_NOTIONAL_PCT", str(max_position_notional_pct)))
-    if max_position_notional_pct > 0:
-        cap_notional_pct = min(cap_notional_pct, max_position_notional_pct)
-    capped_qty = math.floor((equity * cap_notional_pct) / last_price) if cap_notional_pct > 0 else base_qty
-
-    if mode == "notional_cap":
-        return max(0, capped_qty)
-
-    if mode == "atr_risk":
-        risk_pct = float(os.getenv("ATR_RISK_PER_TRADE_PCT", "0.0025"))
-        if atr_value is None or atr_value <= 0:
-            return 0
-        atr_qty = math.floor((equity * risk_pct) / atr_value)
-        if capped_qty > 0:
-            atr_qty = min(atr_qty, capped_qty)
-        return max(0, atr_qty)
-
-    return base_qty
-
-
-def _should_allow_reentry_during_cooldown(state, signal: str, current_strength: float | None) -> bool:
-    if not _env_flag("REENTRY_REQUIRES_SIGNAL_STRENGTH_IMPROVEMENT", False):
-        return False
-    if current_strength is None or state.last_entry_signal_strength is None:
-        return False
-    if signal not in {"LONG", "SHORT"}:
-        return False
-    min_delta = float(os.getenv("REENTRY_MIN_SIGNAL_STRENGTH_DELTA", "0.0"))
-    return current_strength >= (state.last_entry_signal_strength + min_delta)
 
 
 def emit_event(conn, ts: str, level: str, event_type: str, symbol: str | None, message: str | None, payload: dict | None = None) -> None:
@@ -771,7 +718,16 @@ def main():
     entering_long = pos_qty == 0 and desired_action == "BUY" and signal == "LONG"
     entering_short = pos_qty == 0 and desired_action == "SELL" and signal == "SHORT"
     if entering_long or entering_short:
-        order_qty = _compute_entry_qty(sizing_mode, qty, equity, _safe_float(last_price), _safe_float(v_atr), max_position_notional_pct)
+        order_qty = compute_entry_qty(
+            sizing_mode,
+            qty,
+            equity,
+            _safe_float(last_price),
+            _safe_float(v_atr),
+            max_position_notional_pct,
+            target_position_notional_pct=float(os.getenv("TARGET_POSITION_NOTIONAL_PCT", str(max_position_notional_pct))),
+            atr_risk_per_trade_pct=float(os.getenv("ATR_RISK_PER_TRADE_PCT", "0.0025")),
+        )
         risk_eval = evaluate_entry_risk(
             RiskConfig(
                 max_trades_per_day=max_trades_per_day,
@@ -807,7 +763,13 @@ def main():
 
         since = bars_since(state.last_trade_ts, bars2)
         if since is not None and since < cooldown_bars:
-            if _should_allow_reentry_during_cooldown(state, signal, _safe_float(signal_strength)):
+            if should_allow_reentry_during_cooldown(
+                state,
+                signal,
+                _safe_float(signal_strength),
+                require_signal_strength_improvement=_env_flag("REENTRY_REQUIRES_SIGNAL_STRENGTH_IMPROVEMENT", False),
+                min_signal_strength_delta=float(os.getenv("REENTRY_MIN_SIGNAL_STRENGTH_DELTA", "0.0")),
+            ):
                 note_parts.append("cooldown_overridden_stronger_signal")
             else:
                 action = "HOLD"
