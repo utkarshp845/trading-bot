@@ -75,6 +75,31 @@ class OptimizeStrategyTests(unittest.TestCase):
         self.assertIn("SMA_SLOW=50", block)
         self.assertIn("ENTRY_WINDOWS=0940-1130", block)
 
+    def test_iter_candidates_respects_max_candidates_cap(self):
+        with patch.dict(
+            os.environ,
+            {
+                "OPT_MAX_CANDIDATES": "3",
+                "OPT_SMA_FAST_VALUES": "10,20,30",
+                "OPT_SMA_SLOW_VALUES": "40,50,60",
+                "OPT_ADX_THRESHOLD_VALUES": "20,25",
+                "OPT_LONG_ADX_THRESHOLD_VALUES": "25",
+                "OPT_ATR_MAX_PCT_VALUES": "0.0045",
+                "OPT_LONG_ATR_MAX_PCT_VALUES": "0.0035",
+                "OPT_VOLUME_MIN_MULTIPLIER_VALUES": "1.0",
+                "OPT_LONG_VOLUME_MIN_MULTIPLIER_VALUES": "1.1",
+                "OPT_SHORT_VOLUME_MIN_MULTIPLIER_VALUES": "1.0",
+                "OPT_TRAIL_ATR_MULTIPLIER_VALUES": "1.5",
+                "OPT_MAX_BARS_IN_TRADE_VALUES": "12",
+                "OPT_REVERSAL_SIGNAL_STRENGTH_VALUES": "35",
+                "OPT_ENTRY_WINDOWS_VALUES": "0940-1130,0940-1130,1400-1545",
+            },
+            clear=False,
+        ):
+            candidates = iter_candidates()
+
+        self.assertEqual(len(candidates), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

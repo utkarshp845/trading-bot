@@ -79,7 +79,7 @@ def iter_candidates() -> list[dict[str, str]]:
     grid = _candidate_grid()
     keys = list(grid.keys())
     candidates: list[dict[str, str]] = []
-    max_candidates = int(os.getenv("OPT_MAX_CANDIDATES", "200"))
+    max_candidates = int(os.getenv("OPT_MAX_CANDIDATES", "50"))
 
     for values in itertools.product(*(grid[key] for key in keys)):
         candidate = dict(zip(keys, values))
@@ -96,6 +96,10 @@ def iter_candidates() -> list[dict[str, str]]:
             break
 
     return candidates[:max_candidates]
+
+
+def _log(message: str) -> None:
+    print(f"[optimize] {message}", flush=True)
 
 
 @contextmanager
@@ -333,16 +337,35 @@ def main() -> None:
     test_days = int(os.getenv("RESEARCH_TEST_DAYS", "10"))
     starting_equity = float(os.getenv("RESEARCH_STARTING_EQUITY", "100000"))
     top_n = int(os.getenv("OPT_REPORT_TOP_N", "5"))
+    progress_every = max(1, int(os.getenv("OPT_PROGRESS_EVERY", "5")))
 
+    _log(
+        f"starting symbol={symbol} timeframe={timeframe_minutes}m lookback_days={lookback_days} "
+        f"train_days={train_days} test_days={test_days}"
+    )
     trading, data = make_clients()
     del trading
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=lookback_days)
     bars = get_historical_bars(data, symbol, timeframe_minutes, start=start, end=end, limit=None)
+    if bars.empty:
+        raise RuntimeError(
+            "Optimizer received no historical bars from Alpaca. Check credentials, symbol, market-data access, and the selected lookback window."
+        )
 
     candidates = iter_candidates()
-    results = [
-        evaluate_candidate(
+    window_count = len(walk_forward_splits(bars.index, train_days, test_days))
+    if window_count == 0:
+        raise RuntimeError(
+            f"Optimizer could not create any walk-forward windows from {len(bars)} bars. "
+            f"Increase RESEARCH_LOOKBACK_DAYS or reduce RESEARCH_TRAIN_DAYS/RESEARCH_TEST_DAYS."
+        )
+    _log(f"loaded {len(bars)} bars, evaluating {len(candidates)} candidates across {window_count} walk-forward windows")
+
+    results: list[CandidateResult] = []
+    started_at = datetime.now(timezone.utc)
+    for idx, params in enumerate(candidates, start=1):
+        result = evaluate_candidate(
             bars=bars,
             timeframe_minutes=timeframe_minutes,
             sizing_mode=sizing_mode,
@@ -352,8 +375,14 @@ def main() -> None:
             test_days=test_days,
             params=params,
         )
-        for params in candidates
-    ]
+        results.append(result)
+        if idx == 1 or idx % progress_every == 0 or idx == len(candidates):
+            elapsed = (datetime.now(timezone.utc) - started_at).total_seconds()
+            _log(
+                f"progress {idx}/{len(candidates)} "
+                f"elapsed_seconds={elapsed:.1f} best_score={max(row.score for row in results):.2f}"
+            )
+
     ranked = sorted(results, key=lambda row: row.score, reverse=True)
 
     payload = {
@@ -362,13 +391,14 @@ def main() -> None:
         "timeframe_minutes": timeframe_minutes,
         "sizing_mode": sizing_mode,
         "candidate_count": len(ranked),
-        "window_count": len(walk_forward_splits(bars.index, train_days, test_days)),
+        "window_count": window_count,
         "best_candidate": _result_payload(ranked[0]) if ranked else None,
         "top_candidates": [_result_payload(result) for result in ranked[:top_n]],
     }
 
     stem = os.getenv("OPT_OUTPUT_STEM", "optimize_latest").strip() or "optimize_latest"
     write_report(REPORTS_DIR / f"{stem}.md", REPORTS_DIR / f"{stem}.json", payload)
+    _log(f"completed candidate_count={len(ranked)} output_stem={stem}")
     print(f"Wrote {REPORTS_DIR / f'{stem}.md'}")
     print(f"Wrote {REPORTS_DIR / f'{stem}.json'}")
 

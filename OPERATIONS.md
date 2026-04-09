@@ -69,6 +69,13 @@ Run the parameter optimizer:
 docker compose run --rm optimize
 ```
 
+If you want a quicker sanity check first:
+
+```powershell
+$env:OPT_MAX_CANDIDATES="10"
+docker compose run --rm optimize
+```
+
 Outputs:
 
 - `reports/optimize_latest.md`
@@ -76,7 +83,8 @@ Outputs:
 
 Useful optional env controls:
 
-- `OPT_MAX_CANDIDATES` to cap grid size
+- `OPT_MAX_CANDIDATES` to cap grid size. Default is `50`.
+- `OPT_PROGRESS_EVERY` to control how often progress lines print
 - `OPT_REPORT_TOP_N` to control how many ranked setups are shown
 - `OPT_*_VALUES` to narrow or widen the search grid for individual parameters
 

@@ -76,6 +76,13 @@ Run the walk-forward optimizer:
 docker compose run --rm optimize
 ```
 
+The optimizer now logs progress while it runs. For a quick smoke test, cap the search first:
+
+```powershell
+$env:OPT_MAX_CANDIDATES="10"
+docker compose run --rm optimize
+```
+
 Main outputs:
 
 - `reports/monitor_latest.md`
