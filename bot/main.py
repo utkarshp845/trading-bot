@@ -576,6 +576,7 @@ def main():
     v_volume = metrics.get("volume")
     v_volume_ma = metrics.get("volume_ma")
     bar_ts = metrics.get("bar_ts")
+    bar_close_ts = metrics.get("bar_close_ts")
     signal_strength = metrics.get("signal_strength")
 
     if pos_qty > 0 and last_price is not None:
@@ -741,8 +742,17 @@ def main():
             consecutive_losses=state.consecutive_losses,
             daily_start_equity=state.daily_start_equity,
             current_equity=equity,
-            last_bar_ts=bar_ts,
+            last_bar_ts=bar_close_ts or bar_ts,
             position_notional=(float(last_price) * order_qty) if last_price is not None else None,
+            stale_bar_timestamp_basis="bar_close" if bar_close_ts else "bar_open",
+        )
+        logger.info(
+            "stale_bar_check "
+            f"current_runtime_timestamp={risk_eval.stale_bar_details.get('current_runtime_timestamp')} "
+            f"latest_bar_timestamp={risk_eval.stale_bar_details.get('latest_bar_timestamp')} "
+            f"computed_bar_age_seconds={risk_eval.stale_bar_details.get('computed_bar_age_seconds')} "
+            f"allowed_max_age={risk_eval.stale_bar_details.get('allowed_max_age')} "
+            f"timestamp_basis={risk_eval.stale_bar_details.get('timestamp_basis')}"
         )
         if not risk_eval.allow_entries:
             action = "HOLD"
@@ -754,7 +764,11 @@ def main():
                 "entry_blocked_risk",
                 symbol,
                 "Entry blocked by risk guardrails.",
-                {"risk_reasons": risk_eval.reasons, "signal": signal},
+                {
+                    "risk_reasons": risk_eval.reasons,
+                    "signal": signal,
+                    "stale_bar_details": risk_eval.stale_bar_details,
+                },
             )
 
         if order_qty <= 0:

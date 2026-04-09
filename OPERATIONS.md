@@ -63,6 +63,23 @@ Outputs:
 - `reports/research_latest.md`
 - `reports/research_latest.json`
 
+Run the parameter optimizer:
+
+```powershell
+docker compose run --rm optimize
+```
+
+Outputs:
+
+- `reports/optimize_latest.md`
+- `reports/optimize_latest.json`
+
+Useful optional env controls:
+
+- `OPT_MAX_CANDIDATES` to cap grid size
+- `OPT_REPORT_TOP_N` to control how many ranked setups are shown
+- `OPT_*_VALUES` to narrow or widen the search grid for individual parameters
+
 ## Normal Bot Run
 
 Run one bot cycle:

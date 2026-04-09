@@ -70,6 +70,12 @@ Run the research / replay report:
 docker compose run --rm research
 ```
 
+Run the walk-forward optimizer:
+
+```powershell
+docker compose run --rm optimize
+```
+
 Main outputs:
 
 - `reports/monitor_latest.md`
@@ -77,6 +83,8 @@ Main outputs:
 - `reports/daily_YYYY-MM-DD.md`
 - `reports/research_latest.md`
 - `reports/research_latest.json`
+- `reports/optimize_latest.md`
+- `reports/optimize_latest.json`
 
 ## Repo Layout
 
@@ -90,4 +98,5 @@ Main outputs:
 - This repo is set up for paper trading, not production deployment.
 - Keep real API keys only in your local `.env`.
 - By default, the bot will hold if Alpaca market clock data is unavailable.
+- Use the optimizer to rank parameter sets on walk-forward windows before copying new values into `.env`.
 - `OPERATIONS.md` has a few extra day-to-day commands.

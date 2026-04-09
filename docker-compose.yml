@@ -35,3 +35,12 @@ services:
       - ./logs:/app/logs
       - ./reports:/app/reports
     command: ["python", "-m", "bot.research"]
+  optimize:
+    build: .
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./reports:/app/reports
+    command: ["python", "-m", "bot.optimize_strategy"]
