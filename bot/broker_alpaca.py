@@ -95,7 +95,10 @@ def get_recent_bars(data_client: StockHistoricalDataClient, symbol: str, timefra
     """
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=7)
-    return get_historical_bars(data_client, symbol, timeframe_minutes, start=start, end=end, limit=limit)
+    bars = get_historical_bars(data_client, symbol, timeframe_minutes, start=start, end=end, limit=None)
+    if bars.empty:
+        return bars
+    return bars.sort_index().tail(limit)
 
 def get_position_qty(trading: TradingClient, symbol: str) -> float:
     try:

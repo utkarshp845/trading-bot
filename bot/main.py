@@ -515,6 +515,9 @@ def main():
         )
         logger.info("Run complete.")
         return
+    logger.info(
+        f"bars_loaded count={len(bars)} first_bar_ts={bars.index[0].isoformat()} last_bar_ts={bars.index[-1].isoformat()}"
+    )
 
     default_windows = ((940, 1130), (1400, 1545))
     cfg = StrategyConfig(
