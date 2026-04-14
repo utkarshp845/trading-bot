@@ -100,6 +100,8 @@ Current runtime defaults:
 
 - entry stale-bar blocking is disabled unless `ENABLE_STALE_BAR_CHECK=1`
 - bot startup waits `20` seconds by default before broker/data checks; override with `STARTUP_DELAY_SECONDS`
+- overnight carrying is disabled by default; override with `ALLOW_OVERNIGHT_HOLDING=true`
+- end-of-day flattening starts `5` minutes before the close by default; override with `FLATTEN_BEFORE_CLOSE_MINUTES`
 
 ## Notes
 

@@ -45,6 +45,7 @@ from bot.store import (
 )
 from bot.strategy_ma import StrategyConfig, compute_indicators, generate_signal, parse_entry_windows
 from bot.trade_controls import bars_since, compute_entry_qty, should_allow_reentry_during_cooldown
+from bot.trade_controls import evaluate_session_exit
 
 
 TERMINAL_ORDER_STATUSES = {"FILLED", "CANCELED", "CANCELLED", "REJECTED", "EXPIRED"}
@@ -213,7 +214,7 @@ def sync_position_state_with_broker(conn, trading, symbol: str, logger):
     if entry_price is None:
         entry_price = pos_state.entry_price
 
-    entry_ts = pos_state.entry_ts or utc_iso_now()
+    entry_ts = pos_state.entry_ts
     highest_price = pos_state.highest_price
     lowest_price = pos_state.lowest_price
 
@@ -427,12 +428,15 @@ def main():
     startup_delay_seconds = max(0, int(os.getenv("STARTUP_DELAY_SECONDS", "20")))
     sizing_mode = os.getenv("POSITION_SIZING_MODE", "fixed").strip().lower() or "fixed"
     reversal_signal_strength_min = float(os.getenv("REVERSAL_SIGNAL_STRENGTH_MIN", "0"))
+    allow_overnight_holding = _env_flag("ALLOW_OVERNIGHT_HOLDING", False)
+    flatten_before_close_minutes = max(0, int(os.getenv("FLATTEN_BEFORE_CLOSE_MINUTES", "5")))
 
     ts = utc_iso_now()
     logger.info(
         f"Run start ts={ts} symbol={symbol} tf={timeframe_minutes}m qty={qty} "
         f"strategy_version={strategy_version} stale_bar_check={'enabled' if stale_bar_checks_enabled else 'disabled'} "
-        f"max_bar_age_seconds={max_bar_age_seconds} startup_delay={startup_delay_seconds}s sizing_mode={sizing_mode}"
+        f"max_bar_age_seconds={max_bar_age_seconds} startup_delay={startup_delay_seconds}s sizing_mode={sizing_mode} "
+        f"allow_overnight_holding={allow_overnight_holding} flatten_before_close_minutes={flatten_before_close_minutes}"
     )
 
     trading, data = make_clients()
@@ -453,6 +457,8 @@ def main():
             "max_bar_age_seconds": max_bar_age_seconds,
             "startup_delay_seconds": startup_delay_seconds,
             "position_sizing_mode": sizing_mode,
+            "allow_overnight_holding": allow_overnight_holding,
+            "flatten_before_close_minutes": flatten_before_close_minutes,
         },
     )
 
@@ -465,6 +471,12 @@ def main():
     equity, cash = get_account_snapshot(trading)
     state = get_state(conn, equity)
     pos_state, pos_qty = sync_position_state_with_broker(conn, trading, symbol, logger)
+    session_exit = evaluate_session_exit(
+        pos_qty,
+        pos_state.entry_ts,
+        allow_overnight_holding=allow_overnight_holding,
+        flatten_before_close_minutes=flatten_before_close_minutes,
+    )
 
     market_open = is_market_open(trading)
     used_et_market_fallback = False
@@ -504,6 +516,61 @@ def main():
 
     bars = get_recent_bars(data, symbol, timeframe_minutes, limit=220)
     if bars.empty:
+        pending_orders = has_pending_orders(conn, symbol)
+        if session_exit.should_exit and not pending_orders and pos_qty != 0:
+            forced_action = "SELL" if pos_qty > 0 else "BUY"
+            forced_intent = "exit"
+            forced_note = session_exit.reason
+            executed_qty = int(abs(float(pos_qty)))
+            order_info = place_market_order(trading, symbol, forced_action.lower(), executed_qty)
+            status = normalize_order_status(getattr(order_info, "status", None))
+            filled_avg = _safe_float(getattr(order_info, "filled_avg_price", None))
+            filled_qty = _safe_float(getattr(order_info, "filled_qty", None))
+            filled_at = _to_iso(getattr(order_info, "filled_at", None))
+            record_run(
+                conn,
+                ts,
+                symbol,
+                None,
+                None,
+                None,
+                "HOLD",
+                forced_action,
+                pos_qty,
+                equity,
+                cash,
+                forced_note,
+                strategy_version=strategy_version,
+            )
+            record_order_submission(
+                conn,
+                ts,
+                symbol,
+                forced_action.lower(),
+                float(executed_qty),
+                str(order_info.id),
+                status,
+                filled_avg,
+                filled_qty,
+                forced_intent,
+                semantic_action_type(pos_qty, forced_action),
+                forced_note,
+                pos_qty,
+                filled_at,
+                decision_signal="HOLD",
+            )
+            logger.warning(f"No bars returned, but submitted forced session exit due to {forced_note}.")
+            emit_event(
+                conn,
+                ts,
+                "WARN",
+                "session_exit_without_bars",
+                symbol,
+                "No bars returned; forced session exit order was still submitted.",
+                {"reason": forced_note, "position_qty": pos_qty, "order_id": str(order_info.id)},
+            )
+            logger.info("Run complete.")
+            return
         note = "no_bars"
         logger.warning("No bars returned. Recording run as HOLD.")
         emit_event(conn, ts, "WARN", "no_bars", symbol, "No bars returned from market data client.", None)
@@ -714,6 +781,20 @@ def main():
         if exit_reason:
             note_parts.append(exit_reason)
             intent = "exit"
+
+    if session_exit.should_exit and desired_action == "HOLD":
+        desired_action = "SELL" if pos_qty > 0 else "BUY"
+        intent = "exit"
+        note_parts.append(session_exit.reason)
+        emit_event(
+            conn,
+            ts,
+            "WARN",
+            "session_exit_triggered",
+            symbol,
+            "Position exit triggered by session policy.",
+            {"reason": session_exit.reason, "position_qty": pos_qty, "entry_ts": pos_state.entry_ts},
+        )
 
     action = desired_action
     pending_orders = has_pending_orders(conn, symbol)

@@ -31,6 +31,8 @@ Important env values:
 - `SYMBOL=SPY`
 - `TIMEFRAME_MINUTES=5`
 - `QTY=1`
+- `ALLOW_OVERNIGHT_HOLDING=false`
+- `FLATTEN_BEFORE_CLOSE_MINUTES=5`
 
 ## Run
 
@@ -105,5 +107,6 @@ Main outputs:
 - This repo is set up for paper trading, not production deployment.
 - Keep real API keys only in your local `.env`.
 - By default, the bot will hold if Alpaca market clock data is unavailable.
+- By default, the bot behaves as an intraday system: it will flatten inherited overnight positions on the next market session and try to flatten open positions shortly before the close.
 - Use the optimizer to rank parameter sets on walk-forward windows before copying new values into `.env`.
 - `OPERATIONS.md` has a few extra day-to-day commands.

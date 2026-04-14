@@ -5,7 +5,7 @@ import unittest
 import pandas as pd
 
 from bot.risk import RiskConfig
-from bot.trade_controls import ReplayState, evaluate_replay_entry, sync_replay_day
+from bot.trade_controls import ReplayState, evaluate_replay_entry, evaluate_session_exit, sync_replay_day
 
 
 UTC = ZoneInfo("UTC")
@@ -78,6 +78,42 @@ class TradeControlsTests(unittest.TestCase):
         sync_replay_day(state, datetime(2026, 4, 1, 13, 30, tzinfo=UTC), 99500)
         self.assertEqual(state.trades_today, 0)
         self.assertEqual(state.daily_start_equity, 99500)
+
+    def test_session_exit_flattens_inherited_position_when_overnight_holding_disabled(self):
+        now_utc = datetime(2026, 4, 1, 14, 35, tzinfo=UTC)
+        decision = evaluate_session_exit(
+            position_qty=1.0,
+            entry_ts="2026-03-31T19:55:00+00:00",
+            allow_overnight_holding=False,
+            flatten_before_close_minutes=5,
+            now_utc=now_utc,
+        )
+        self.assertTrue(decision.should_exit)
+        self.assertEqual(decision.reason, "overnight_position_detected")
+
+    def test_session_exit_flattens_unknown_broker_position_when_overnight_holding_disabled(self):
+        now_utc = datetime(2026, 4, 1, 14, 35, tzinfo=UTC)
+        decision = evaluate_session_exit(
+            position_qty=1.0,
+            entry_ts=None,
+            allow_overnight_holding=False,
+            flatten_before_close_minutes=5,
+            now_utc=now_utc,
+        )
+        self.assertTrue(decision.should_exit)
+        self.assertEqual(decision.reason, "inherited_position_missing_entry_ts")
+
+    def test_session_exit_flattens_near_close_even_for_same_day_position(self):
+        now_utc = datetime(2026, 4, 1, 19, 56, tzinfo=UTC)
+        decision = evaluate_session_exit(
+            position_qty=1.0,
+            entry_ts="2026-04-01T14:35:00+00:00",
+            allow_overnight_holding=False,
+            flatten_before_close_minutes=5,
+            now_utc=now_utc,
+        )
+        self.assertTrue(decision.should_exit)
+        self.assertEqual(decision.reason, "session_flatten_window(5m_before_close)")
 
 
 if __name__ == "__main__":

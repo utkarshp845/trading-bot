@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 from bot.risk import RiskConfig, evaluate_entry_risk, parse_ts, trading_day_et
+
+
+ET = ZoneInfo("America/New_York")
 
 
 @dataclass
@@ -18,6 +22,12 @@ class ReplayState:
     last_entry_signal_strength: float | None = None
     last_entry_signal_side: str | None = None
     trading_day: str | None = None
+
+
+@dataclass
+class SessionExitDecision:
+    should_exit: bool
+    reason: str | None = None
 
 
 def bars_since(last_trade_ts: str | None, bars: pd.DataFrame) -> int | None:
@@ -145,3 +155,35 @@ def record_replay_exit(state: ReplayState, ts, pnl: float) -> None:
         state.consecutive_losses = 0
     else:
         state.consecutive_losses += 1
+
+
+def evaluate_session_exit(
+    position_qty: float,
+    entry_ts: str | None,
+    allow_overnight_holding: bool,
+    flatten_before_close_minutes: int,
+    now_utc: datetime | None = None,
+) -> SessionExitDecision:
+    if position_qty == 0:
+        return SessionExitDecision(False, None)
+
+    current_utc = now_utc or datetime.now(timezone.utc)
+    current_day = trading_day_et(current_utc)
+    current_et = current_utc.astimezone(ET)
+
+    if current_et.weekday() < 5 and not allow_overnight_holding:
+        if entry_ts is None:
+            return SessionExitDecision(True, "inherited_position_missing_entry_ts")
+        entry_dt = parse_ts(entry_ts)
+        if entry_dt is None:
+            return SessionExitDecision(True, "inherited_position_invalid_entry_ts")
+        if trading_day_et(entry_dt) != current_day:
+            return SessionExitDecision(True, "overnight_position_detected")
+
+    if flatten_before_close_minutes > 0 and current_et.weekday() < 5:
+        market_close_et = current_et.replace(hour=16, minute=0, second=0, microsecond=0)
+        flatten_start_et = market_close_et - timedelta(minutes=flatten_before_close_minutes)
+        if flatten_start_et <= current_et < market_close_et:
+            return SessionExitDecision(True, f"session_flatten_window({flatten_before_close_minutes}m_before_close)")
+
+    return SessionExitDecision(False, None)
