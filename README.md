@@ -208,3 +208,4 @@ Push to the `main` branch to trigger automatic deployment via GitHub Actions.
 - Use the optimizer to rank parameter sets on walk-forward windows before copying new values into `.env`.
 - `OPERATIONS.md` has a few extra day-to-day commands.
 - `docs/github_actions_ec2.md` walks through the GitHub Actions based EC2 deployment path.
+- Run `scripts/validate.ps1` for the full local validation pass on Windows, or `scripts/validate.sh` on Unix-like shells.

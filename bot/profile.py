@@ -14,6 +14,14 @@ def _load_base_env() -> None:
         load_dotenv(default_env)
 
 
+def _load_profile_env(profile: str) -> None:
+    profile_env = APP_ROOT / "config" / f"{profile}_spy.env"
+    if profile_env.exists():
+        # Match docker-compose env_file precedence: profile-specific values
+        # should override the base .env for that profile's runtime.
+        load_dotenv(profile_env, override=True)
+
+
 def _bind_profile_credentials(profile: str) -> None:
     profile_key = os.getenv(f"ALPACA_{profile.upper()}_API_KEY")
     profile_secret = os.getenv(f"ALPACA_{profile.upper()}_SECRET_KEY")
@@ -53,6 +61,7 @@ def _set_profile_defaults(profile: str) -> None:
 def load_profile(profile: str) -> None:
     normalized = profile.strip().lower()
     _load_base_env()
+    _load_profile_env(normalized)
     _bind_profile_credentials(normalized)
     _set_runtime_dirs(normalized)
     _set_profile_defaults(normalized)

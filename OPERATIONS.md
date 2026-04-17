@@ -148,3 +148,13 @@ The repo includes a GitHub Actions workflow for EC2 deploys:
 - `docs: docs/github_actions_ec2.md`
 
 The deployment path syncs the repo to EC2, uploads the server `.env`, validates the selected profile, and installs a weekday cron schedule for repeated runs.
+
+## Validation Script
+
+For the full local validation pass, run:
+
+```powershell
+./scripts/validate.ps1
+```
+
+This runs pytest plus the base, paper, and live runtime validators.

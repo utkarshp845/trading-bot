@@ -166,12 +166,20 @@ def _window_label(hhmm_start: int, hhmm_end: int) -> str:
     return f"{hhmm_start // 100:02d}:{hhmm_start % 100:02d}-{hhmm_end // 100:02d}:{hhmm_end % 100:02d}"
 
 
-def _bar_close_ts(ts, timeframe_minutes: int):
+def _normalize_ts(ts):
     if ts is None:
         return None
+    ts = pd.Timestamp(ts)
     if ts.tzinfo is None:
         ts = ts.tz_localize("UTC")
-    return ts + timedelta(minutes=timeframe_minutes)
+    return ts
+
+
+def _bar_close_ts(ts, timeframe_minutes: int):
+    normalized = _normalize_ts(ts)
+    if normalized is None:
+        return None
+    return normalized + timedelta(minutes=timeframe_minutes)
 
 
 def classify_time_window_et(ts, timeframe_minutes: int, windows: tuple[tuple[int, int], ...] | None = None) -> str | None:
@@ -192,7 +200,8 @@ def _in_valid_trade_window_et(ts, timeframe_minutes: int, windows: tuple[tuple[i
 
 
 def build_signal_metrics(last: pd.Series, last_ts, cfg: StrategyConfig) -> dict:
-    bar_close_ts = _bar_close_ts(last_ts, cfg.timeframe_minutes)
+    normalized_last_ts = _normalize_ts(last_ts)
+    bar_close_ts = _bar_close_ts(normalized_last_ts, cfg.timeframe_minutes)
     bar_close_ts_et = bar_close_ts.tz_convert(ET) if bar_close_ts is not None else None
     return {
         "price": float(last["close"]) if pd.notna(last["close"]) else None,
@@ -211,11 +220,11 @@ def build_signal_metrics(last: pd.Series, last_ts, cfg: StrategyConfig) -> dict:
         "session_open": float(last["session_open"]) if pd.notna(last.get("session_open")) else None,
         "price_distance_from_vwap_pct": float(last["price_distance_from_vwap_pct"]) if pd.notna(last.get("price_distance_from_vwap_pct")) else None,
         "price_distance_from_open_pct": float(last["price_distance_from_open_pct"]) if pd.notna(last.get("price_distance_from_open_pct")) else None,
-        "bar_ts": str(last_ts) if last_ts is not None else None,
+        "bar_ts": str(normalized_last_ts) if normalized_last_ts is not None else None,
         "bar_close_ts": str(bar_close_ts) if bar_close_ts is not None else None,
         "bar_close_ts_et": str(bar_close_ts_et) if bar_close_ts_et is not None else None,
-        "long_time_window": classify_time_window_et(last_ts, cfg.timeframe_minutes, cfg.entry_windows_for("long")),
-        "short_time_window": classify_time_window_et(last_ts, cfg.timeframe_minutes, cfg.entry_windows_for("short")),
+        "long_time_window": classify_time_window_et(normalized_last_ts, cfg.timeframe_minutes, cfg.entry_windows_for("long")),
+        "short_time_window": classify_time_window_et(normalized_last_ts, cfg.timeframe_minutes, cfg.entry_windows_for("short")),
     }
 
 

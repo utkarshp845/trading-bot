@@ -11,3 +11,4 @@ runtime/
 .idea/
 .DS_Store
 .claude/
+.pytest_cache/
