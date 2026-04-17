@@ -139,3 +139,12 @@ Current runtime defaults:
 - Keep real Alpaca keys only in the local untracked `.env`.
 - Alpaca's paper account balance still needs to be adjusted in the dashboard. The repo now mirrors that target by using roughly `$250` as the paper research starting equity.
 - Review `reports/monitor_latest.md` after each trading session if you want a concise explanation of what the bot did and why.
+
+## EC2 Deploy
+
+The repo includes a GitHub Actions workflow for EC2 deploys:
+
+- `workflow: .github/workflows/deploy-ec2.yml`
+- `docs: docs/github_actions_ec2.md`
+
+The deployment path syncs the repo to EC2, uploads the server `.env`, validates the selected profile, and installs a weekday cron schedule for repeated runs.

@@ -133,3 +133,4 @@ Main outputs:
 - The paper SPY profile is configured to replay from roughly `$250` starting equity so the research output is closer to a small-account test.
 - Use the optimizer to rank parameter sets on walk-forward windows before copying new values into `.env`.
 - `OPERATIONS.md` has a few extra day-to-day commands.
+- `docs/github_actions_ec2.md` walks through the GitHub Actions based EC2 deployment path.
