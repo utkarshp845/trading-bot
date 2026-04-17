@@ -1,0 +1,101 @@
+name: Deploy To EC2
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Profile to deploy and schedule on EC2
+        required: true
+        default: live
+        type: choice
+        options:
+          - live
+          - paper
+      install_cron:
+        description: Install or refresh the weekday cron schedule
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-ec2-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      EC2_HOST: ${{ secrets.EC2_HOST }}
+      EC2_USER: ${{ secrets.EC2_USER }}
+      EC2_PORT: ${{ vars.EC2_PORT != '' && vars.EC2_PORT || '22' }}
+      EC2_APP_DIR: ${{ vars.EC2_APP_DIR != '' && vars.EC2_APP_DIR || '/opt/trading-bot/app' }}
+      DEPLOY_PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.profile || 'live' }}
+      INSTALL_CRON: ${{ github.event_name == 'workflow_dispatch' && inputs.install_cron || 'true' }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        run: |
+          test -n "$EC2_HOST"
+          test -n "$EC2_USER"
+          test -n "${{ secrets.EC2_SSH_KEY }}"
+          test -n "${{ secrets.EC2_ENV_FILE }}"
+
+      - name: Prepare SSH
+        run: |
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          cat > "$HOME/.ssh/deploy_key" <<'EOF'
+          ${{ secrets.EC2_SSH_KEY }}
+          EOF
+          chmod 600 "$HOME/.ssh/deploy_key"
+          ssh-keyscan -p "$EC2_PORT" -H "$EC2_HOST" >> "$HOME/.ssh/known_hosts"
+
+      - name: Write runtime env file
+        run: |
+          cat > ec2.env <<'EOF'
+          ${{ secrets.EC2_ENV_FILE }}
+          EOF
+          chmod 600 ec2.env
+
+      - name: Ensure remote app directory exists
+        run: |
+          ssh -i "$HOME/.ssh/deploy_key" -p "$EC2_PORT" "$EC2_USER@$EC2_HOST" \
+            "mkdir -p '$EC2_APP_DIR'"
+
+      - name: Sync repository to EC2
+        run: |
+          rsync -az --delete \
+            -e "ssh -i $HOME/.ssh/deploy_key -p $EC2_PORT" \
+            --exclude ".git/" \
+            --exclude ".github/" \
+            --exclude ".env" \
+            --exclude "__pycache__/" \
+            --exclude ".pytest_cache/" \
+            --exclude ".mypy_cache/" \
+            --exclude ".venv/" \
+            --exclude ".claude/" \
+            --exclude "data/" \
+            --exclude "logs/" \
+            --exclude "reports/" \
+            --exclude "runtime/" \
+            ./ "$EC2_USER@$EC2_HOST:$EC2_APP_DIR/"
+
+      - name: Upload runtime env file
+        run: |
+          scp -i "$HOME/.ssh/deploy_key" -P "$EC2_PORT" ec2.env \
+            "$EC2_USER@$EC2_HOST:$EC2_APP_DIR/.env"
+
+      - name: Deploy on EC2
+        run: |
+          ssh -i "$HOME/.ssh/deploy_key" -p "$EC2_PORT" "$EC2_USER@$EC2_HOST" \
+            "cd '$EC2_APP_DIR' && chmod +x deploy/ec2/deploy_remote.sh deploy/ec2/install_cron.sh && APP_DIR='$EC2_APP_DIR' INSTALL_CRON='$INSTALL_CRON' RUN_AFTER_DEPLOY='0' bash deploy/ec2/deploy_remote.sh '$DEPLOY_PROFILE'"
+

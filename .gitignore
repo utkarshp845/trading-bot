@@ -1,9 +1,12 @@
 .env
+.env.paper
+.env.live
 __pycache__/
 *.pyc
 data/
 logs/
 reports/
+runtime/
 .vscode/
 .idea/
 .DS_Store

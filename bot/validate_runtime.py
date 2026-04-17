@@ -98,8 +98,9 @@ def main() -> int:
         consecutive_losses=0,
         daily_start_equity=100000,
         current_equity=100000,
-        last_bar_ts=metrics.get("bar_ts"),
+        last_bar_ts=metrics.get("bar_close_ts") or metrics.get("bar_ts"),
         position_notional=1000,
+        stale_bar_timestamp_basis="bar_close" if metrics.get("bar_close_ts") else "bar_open",
     )
     check(risk.allow_entries, "Risk evaluation allows a healthy sample entry.", "Risk evaluation unexpectedly blocked a healthy sample entry.", failures)
     replay_equity, replay_trades = run_replay(bars, cfg, sizing_mode="fixed", base_qty=1, starting_equity=100000.0)

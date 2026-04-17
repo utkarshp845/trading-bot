@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
@@ -13,7 +12,9 @@ from zoneinfo import ZoneInfo
 from bot.broker_alpaca import get_historical_bars, make_clients
 from bot.metrics import add_condition_buckets, best_worst_conditions, closed_trade_summary, max_drawdown, summarize_by_group
 from bot.paths import REPORTS_DIR, ensure_runtime_dirs
+from bot.risk import RiskConfig
 from bot.strategy_ma import StrategyConfig, compute_indicators, generate_signal, parse_entry_windows
+from bot.trade_controls import ReplayState, compute_entry_qty, evaluate_replay_entry, record_replay_entry, record_replay_exit, sync_replay_day
 
 
 ET = ZoneInfo("America/New_York")
@@ -92,21 +93,6 @@ def build_strategy_config(timeframe_minutes: int) -> StrategyConfig:
     )
 
 
-def compute_qty(mode: str, base_qty: int, equity: float, price: float, atr_value: float | None) -> int:
-    max_position_notional_pct = float(os.getenv("MAX_POSITION_NOTIONAL_PCT", "0.02"))
-    if mode == "fixed":
-        return base_qty
-    cap_notional_pct = min(float(os.getenv("TARGET_POSITION_NOTIONAL_PCT", str(max_position_notional_pct))), max_position_notional_pct)
-    capped_qty = math.floor((equity * cap_notional_pct) / price) if price > 0 else 0
-    if mode == "notional_cap":
-        return max(0, capped_qty)
-    risk_pct = float(os.getenv("ATR_RISK_PER_TRADE_PCT", "0.0025"))
-    if atr_value is None or atr_value <= 0:
-        return 0
-    atr_qty = math.floor((equity * risk_pct) / atr_value)
-    return max(0, min(atr_qty, capped_qty))
-
-
 def apply_slippage(price: float, side: str, slippage_per_share: float) -> float:
     if side == "buy":
         return price + slippage_per_share
@@ -117,10 +103,25 @@ def run_replay(bars: pd.DataFrame, cfg: StrategyConfig, sizing_mode: str, base_q
     commission = float(os.getenv("RESEARCH_COMMISSION_PER_TRADE", "0"))
     slippage = float(os.getenv("RESEARCH_SLIPPAGE_PER_SHARE", "0.01"))
     reversal_signal_strength_min = float(os.getenv("REVERSAL_SIGNAL_STRENGTH_MIN", "0"))
+    cooldown_bars = int(os.getenv("COOLDOWN_BARS", "2"))
+    max_position_notional_pct = float(os.getenv("MAX_POSITION_NOTIONAL_PCT", "0.02"))
+    target_position_notional_pct = float(os.getenv("TARGET_POSITION_NOTIONAL_PCT", str(max_position_notional_pct)))
+    atr_risk_per_trade_pct = float(os.getenv("ATR_RISK_PER_TRADE_PCT", "0.0025"))
+    require_signal_strength_improvement = _env_flag("REENTRY_REQUIRES_SIGNAL_STRENGTH_IMPROVEMENT", False)
+    min_signal_strength_delta = float(os.getenv("REENTRY_MIN_SIGNAL_STRENGTH_DELTA", "0"))
+    risk_config = RiskConfig(
+        max_trades_per_day=int(os.getenv("MAX_TRADES_PER_DAY", "5")),
+        max_daily_drawdown_pct=float(os.getenv("MAX_DAILY_DRAWDOWN_PCT", "0.01")),
+        max_daily_loss=float(os.getenv("MAX_DAILY_LOSS", "0")),
+        max_consecutive_losses=int(os.getenv("MAX_CONSECUTIVE_LOSSES", "3")),
+        max_bar_age_seconds=0,
+        max_position_notional_pct=max_position_notional_pct,
+    )
     bars2 = compute_indicators(bars, cfg)
 
     equity = starting_equity
     position: ReplayPosition | None = None
+    state = ReplayState(daily_start_equity=starting_equity)
     equity_rows: list[dict] = []
     trades: list[dict] = []
 
@@ -132,6 +133,8 @@ def run_replay(bars: pd.DataFrame, cfg: StrategyConfig, sizing_mode: str, base_q
         price = float(metrics.get("price") or row["close"])
         atr_value = metrics.get("atr")
         signal_strength = float(metrics.get("signal_strength") or 0.0)
+        sync_replay_day(state, ts, equity)
+        exited_this_bar = False
 
         if position is not None:
             position.high_water = max(position.high_water, price)
@@ -153,6 +156,7 @@ def run_replay(bars: pd.DataFrame, cfg: StrategyConfig, sizing_mode: str, base_q
                     fill_price = apply_slippage(price, "sell", slippage)
                     pnl = (fill_price - position.entry_price) * position.qty - (2 * commission)
                     equity += pnl
+                    record_replay_exit(state, ts, pnl)
                     trades.append(
                         {
                             "entry_ts": str(position.entry_ts),
@@ -174,6 +178,7 @@ def run_replay(bars: pd.DataFrame, cfg: StrategyConfig, sizing_mode: str, base_q
                         }
                     )
                     position = None
+                    exited_this_bar = True
             else:
                 stop_price = position.low_water + (trail_mult * float(atr_value or 0.0))
                 if cfg.enable_breakeven_stop and atr_value is not None and price <= position.entry_price - (cfg.breakeven_after_atr_multiple * atr_value):
@@ -190,6 +195,7 @@ def run_replay(bars: pd.DataFrame, cfg: StrategyConfig, sizing_mode: str, base_q
                     fill_price = apply_slippage(price, "buy", slippage)
                     pnl = (position.entry_price - fill_price) * position.qty - (2 * commission)
                     equity += pnl
+                    record_replay_exit(state, ts, pnl)
                     trades.append(
                         {
                             "entry_ts": str(position.entry_ts),
@@ -211,10 +217,36 @@ def run_replay(bars: pd.DataFrame, cfg: StrategyConfig, sizing_mode: str, base_q
                         }
                     )
                     position = None
+                    exited_this_bar = True
 
-        if position is None and signal in {"LONG", "SHORT"}:
-            qty = compute_qty(sizing_mode, base_qty, equity, price, atr_value)
-            if qty > 0:
+        if position is None and not exited_this_bar and signal in {"LONG", "SHORT"}:
+            qty = compute_entry_qty(
+                sizing_mode,
+                base_qty,
+                equity,
+                price,
+                atr_value,
+                max_position_notional_pct,
+                target_position_notional_pct=target_position_notional_pct,
+                atr_risk_per_trade_pct=atr_risk_per_trade_pct,
+            )
+            entry_blockers = evaluate_replay_entry(
+                state,
+                slice_df,
+                ts,
+                signal,
+                signal_strength,
+                equity,
+                metrics.get("bar_ts"),
+                position_notional=(price * qty) if qty > 0 else None,
+                cooldown_bars=cooldown_bars,
+                risk_config=risk_config,
+                require_signal_strength_improvement=require_signal_strength_improvement,
+                min_signal_strength_delta=min_signal_strength_delta,
+            )
+            if qty <= 0:
+                entry_blockers.append("position_sizing_blocked")
+            if qty > 0 and not [reason for reason in entry_blockers if reason != "cooldown_overridden_stronger_signal"]:
                 fill_side = "buy" if signal == "LONG" else "sell"
                 fill_price = apply_slippage(price, fill_side, slippage)
                 position = ReplayPosition(
@@ -236,6 +268,10 @@ def run_replay(bars: pd.DataFrame, cfg: StrategyConfig, sizing_mode: str, base_q
                     },
                 )
                 equity -= commission
+                record_replay_entry(state, ts, signal, signal_strength)
+                reasons = list(reasons) + entry_blockers
+            else:
+                reasons = list(reasons) + entry_blockers
 
         equity_rows.append({"ts": str(ts), "equity": equity, "signal": signal, "reasons": ";".join(reasons)})
 
