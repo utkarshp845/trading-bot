@@ -6,17 +6,18 @@ from bot.profile import load_profile
 
 
 def _usage() -> int:
-    print("Usage: python -m bot.profile_runner <paper|live> <trade|monitor|research|validate>")
+    print("Usage: python -m bot.profile_runner <paper|live|paper-btc|live-btc> <trade|monitor|research|validate> [spy|btc]")
     return 2
 
 
 def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
-    if len(args) != 2:
+    if len(args) not in {2, 3}:
         return _usage()
 
-    profile, action = args
-    load_profile(profile)
+    profile, action = args[:2]
+    market = args[2] if len(args) == 3 else None
+    load_profile(profile, market)
 
     if action == "trade":
         from bot.main import main as trade_main

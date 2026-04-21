@@ -1,6 +1,6 @@
 # Trading Bot
 
-Trend-following trading bot for Alpaca, supporting both intraday equities (SPY) and 24/7 crypto (BTC/USD). Uses an SMA crossover strategy with ADX, ATR, and volume filters, layered risk controls, and multiple exit mechanisms.
+Trend-following trading bot for Alpaca, supporting both intraday equities (SPY) and 24/7 crypto (BTC/USD). Uses a trend-confirmed moving-average strategy with ADX, ATR, volume, momentum, and regime filters, layered risk controls, and multiple exit mechanisms.
 
 It currently:
 
@@ -51,9 +51,15 @@ Pre-built configs live in `config/`:
 |---|---|---|
 | `config/paper_spy.env` | SPY | Paper trading equities |
 | `config/live_spy.env` | SPY | Live trading equities |
+| `config/paper_btc.env` | BTC/USD | Paper trading Bitcoin (24/7, fractional) |
 | `config/live_btc.env` | BTC/USD | Live trading Bitcoin (24/7, fractional) |
 
-Load a profile by setting `BOT_PROFILE` or by sourcing the file before running.
+Load a profile by setting `BOT_PROFILE` / `BOT_MARKET`, by sourcing the file before running, or with the profile runner:
+
+```powershell
+python -m bot.profile_runner paper trade btc
+python -m bot.profile_runner live trade btc
+```
 
 ## Run
 
@@ -66,6 +72,9 @@ docker compose run --rm trade
 
 # Generate monitor report
 docker compose run --rm monitor
+
+# Generate paper BTC monitor report
+docker compose run --rm paper-monitor
 
 # Validate the full build and runtime setup
 docker compose run --rm validate
@@ -233,7 +242,7 @@ The bot has multiple independent safety layers:
 
 ## Crypto (BTC/USD)
 
-Set `IS_CRYPTO=true` (or use `config/live_btc.env`) to enable crypto mode:
+Set `IS_CRYPTO=true` (or use `config/paper_btc.env` / `config/live_btc.env`) to enable crypto mode:
 
 - Uses `CryptoHistoricalDataClient` for bar data (no IEX feed requirement)
 - Bypasses NYSE market-hours check — trades 24/7
@@ -241,17 +250,19 @@ Set `IS_CRYPTO=true` (or use `config/live_btc.env`) to enable crypto mode:
 - Position sizing returns fractional quantities (e.g. `0.0005 BTC`)
 - Cron schedule should run every 5 minutes around the clock
 
-For BTC with a small account, recommended settings (already in `config/live_btc.env`):
+For BTC with a small account, recommended settings (already in `config/paper_btc.env` and `config/live_btc.env`):
 - `POSITION_SIZING_MODE=atr_risk` with `ATR_RISK_PER_TRADE_PCT=0.0025`
 - `HARD_STOP_ATR_MULT=3.0`
 - `TRAIL_ATR_MULTIPLIER=2.0` (BTC needs more room than equities)
 - `MAX_DAILY_LOSS=10` (hard dollar cap)
+- `TREND_EMA_PERIOD=55` with minimum EMA-distance confirmation to filter weak mean-reversion noise
+- `MOMENTUM_LOOKBACK_BARS=3` plus `MIN_ADX_DELTA=0.25` to prefer strengthening breakouts over flat crossovers
 
 ## Notes
 
 - Keep real API keys only in your local `.env` — never commit them.
 - By default, the bot behaves as an intraday system: it flattens inherited overnight positions on the next session and exits before market close. Set `ALLOW_OVERNIGHT_HOLDING=true` and `FLATTEN_BEFORE_CLOSE_MINUTES=0` for crypto.
-- The `paper-spy` and `live-spy` runners write to separate runtime directories under `runtime/paper` and `runtime/live`.
+- The SPY runners write to `runtime/paper` and `runtime/live`; BTC runners write to `runtime/paper_btc` and `runtime/live_btc`.
 - Use the optimizer to rank parameter sets on walk-forward windows before going live.
 - `OPERATIONS.md` has day-to-day commands.
 - `docs/github_actions_ec2.md` covers the GitHub Actions EC2 deployment path.

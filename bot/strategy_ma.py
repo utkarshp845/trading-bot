@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+import os
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -54,6 +55,15 @@ class StrategyConfig:
     enable_profit_lock: bool = False
     profit_lock_after_atr_multiple: float = 2.0
     profit_lock_atr_multiple: float = 0.5
+    trend_ema_period: int = 0
+    min_trend_ema_distance_pct: float = 0.0
+    long_min_trend_ema_distance_pct: float | None = None
+    short_min_trend_ema_distance_pct: float | None = None
+    momentum_lookback_bars: int = 0
+    min_momentum_pct: float = 0.0
+    long_min_momentum_pct: float | None = None
+    short_min_momentum_pct: float | None = None
+    min_adx_delta: float = 0.0
 
     def adx_threshold_for(self, side: str) -> float:
         if side == "long" and self.long_adx_threshold is not None:
@@ -97,6 +107,41 @@ class StrategyConfig:
             return self.short_max_bars_in_trade
         return self.max_bars_in_trade
 
+    def min_trend_ema_distance_pct_for(self, side: str) -> float:
+        if side == "long" and self.long_min_trend_ema_distance_pct is not None:
+            return self.long_min_trend_ema_distance_pct
+        if side == "short" and self.short_min_trend_ema_distance_pct is not None:
+            return self.short_min_trend_ema_distance_pct
+        return self.min_trend_ema_distance_pct
+
+    def min_momentum_pct_for(self, side: str) -> float:
+        if side == "long" and self.long_min_momentum_pct is not None:
+            return self.long_min_momentum_pct
+        if side == "short" and self.short_min_momentum_pct is not None:
+            return self.short_min_momentum_pct
+        return self.min_momentum_pct
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_optional_float(name: str) -> float | None:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return None
+    return float(raw)
+
+
+def _env_optional_int(name: str) -> int | None:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return None
+    return int(raw)
+
 
 def parse_entry_windows(raw: str | None, fallback: tuple[tuple[int, int], ...]) -> tuple[tuple[int, int], ...]:
     if raw is None or not raw.strip():
@@ -118,11 +163,65 @@ def parse_entry_windows(raw: str | None, fallback: tuple[tuple[int, int], ...]) 
     return tuple(windows) if windows else fallback
 
 
+def build_strategy_config_from_env(timeframe_minutes: int) -> StrategyConfig:
+    default_windows = ((940, 1130), (1400, 1545))
+    return StrategyConfig(
+        sma_fast=int(os.getenv("SMA_FAST", "20")),
+        sma_slow=int(os.getenv("SMA_SLOW", "50")),
+        adx_period=int(os.getenv("ADX_PERIOD", "14")),
+        adx_threshold=float(os.getenv("ADX_THRESHOLD", "20")),
+        atr_period=int(os.getenv("ATR_PERIOD", "14")),
+        atr_max_pct=float(os.getenv("ATR_MAX_PCT", "0.0045")),
+        volume_ma_period=int(os.getenv("VOLUME_MA_PERIOD", "20")),
+        volume_min_multiplier=float(os.getenv("VOLUME_MIN_MULTIPLIER", os.getenv("VOLUME_THRESHOLD_MULTIPLIER", "0.8"))),
+        timeframe_minutes=timeframe_minutes,
+        trail_atr_multiplier=float(os.getenv("TRAIL_ATR_MULTIPLIER", "1.5")),
+        max_bars_in_trade=int(os.getenv("MAX_BARS_IN_TRADE", "12")),
+        long_adx_threshold=_env_optional_float("LONG_ADX_THRESHOLD"),
+        short_adx_threshold=_env_optional_float("SHORT_ADX_THRESHOLD"),
+        long_atr_max_pct=_env_optional_float("LONG_ATR_MAX_PCT"),
+        short_atr_max_pct=_env_optional_float("SHORT_ATR_MAX_PCT"),
+        long_volume_min_multiplier=_env_optional_float("LONG_VOLUME_MIN_MULTIPLIER"),
+        short_volume_min_multiplier=_env_optional_float("SHORT_VOLUME_MIN_MULTIPLIER"),
+        min_sma_spread_atr_mult=float(os.getenv("MIN_SMA_SPREAD_ATR_MULT", "0")),
+        min_sma_spread_pct=float(os.getenv("MIN_SMA_SPREAD_PCT", "0")),
+        use_vwap_filter=_env_flag("USE_VWAP_FILTER", False),
+        min_price_distance_from_vwap_pct=float(os.getenv("MIN_PRICE_DISTANCE_FROM_VWAP_PCT", "0")),
+        use_session_open_filter=_env_flag("USE_SESSION_OPEN_FILTER", False),
+        min_price_distance_from_open_pct=float(os.getenv("MIN_PRICE_DISTANCE_FROM_OPEN_PCT", "0")),
+        entry_windows=parse_entry_windows(os.getenv("ENTRY_WINDOWS"), default_windows),
+        long_entry_windows=parse_entry_windows(os.getenv("LONG_ENTRY_WINDOWS"), default_windows),
+        short_entry_windows=parse_entry_windows(os.getenv("SHORT_ENTRY_WINDOWS"), default_windows),
+        long_trail_atr_multiplier=_env_optional_float("LONG_TRAIL_ATR_MULTIPLIER"),
+        short_trail_atr_multiplier=_env_optional_float("SHORT_TRAIL_ATR_MULTIPLIER"),
+        long_max_bars_in_trade=_env_optional_int("LONG_MAX_BARS_IN_TRADE"),
+        short_max_bars_in_trade=_env_optional_int("SHORT_MAX_BARS_IN_TRADE"),
+        enable_breakeven_stop=_env_flag("ENABLE_BREAKEVEN_STOP", False),
+        breakeven_after_atr_multiple=float(os.getenv("BREAKEVEN_AFTER_ATR_MULTIPLE", "1.0")),
+        enable_profit_lock=_env_flag("ENABLE_PROFIT_LOCK", False),
+        profit_lock_after_atr_multiple=float(os.getenv("PROFIT_LOCK_AFTER_ATR_MULTIPLE", "2.0")),
+        profit_lock_atr_multiple=float(os.getenv("PROFIT_LOCK_ATR_MULTIPLE", "0.5")),
+        trend_ema_period=int(os.getenv("TREND_EMA_PERIOD", "0")),
+        min_trend_ema_distance_pct=float(os.getenv("MIN_TREND_EMA_DISTANCE_PCT", "0")),
+        long_min_trend_ema_distance_pct=_env_optional_float("LONG_MIN_TREND_EMA_DISTANCE_PCT"),
+        short_min_trend_ema_distance_pct=_env_optional_float("SHORT_MIN_TREND_EMA_DISTANCE_PCT"),
+        momentum_lookback_bars=int(os.getenv("MOMENTUM_LOOKBACK_BARS", "0")),
+        min_momentum_pct=float(os.getenv("MIN_MOMENTUM_PCT", "0")),
+        long_min_momentum_pct=_env_optional_float("LONG_MIN_MOMENTUM_PCT"),
+        short_min_momentum_pct=_env_optional_float("SHORT_MIN_MOMENTUM_PCT"),
+        min_adx_delta=float(os.getenv("MIN_ADX_DELTA", "0")),
+    )
+
+
 def compute_indicators(df: pd.DataFrame, cfg: StrategyConfig) -> pd.DataFrame:
     out = df.copy()
 
     out["sma_fast"] = out["close"].rolling(cfg.sma_fast).mean()
     out["sma_slow"] = out["close"].rolling(cfg.sma_slow).mean()
+    if cfg.trend_ema_period > 0:
+        out["trend_ema"] = out["close"].ewm(span=cfg.trend_ema_period, adjust=False).mean()
+    else:
+        out["trend_ema"] = pd.NA
 
     adx = ADXIndicator(
         high=out["high"],
@@ -131,6 +230,7 @@ def compute_indicators(df: pd.DataFrame, cfg: StrategyConfig) -> pd.DataFrame:
         window=cfg.adx_period,
     )
     out["adx"] = adx.adx()
+    out["adx_delta"] = out["adx"].diff()
 
     atr = AverageTrueRange(
         high=out["high"],
@@ -146,6 +246,10 @@ def compute_indicators(df: pd.DataFrame, cfg: StrategyConfig) -> pd.DataFrame:
     out["sma_spread"] = out["sma_fast"] - out["sma_slow"]
     out["sma_spread_pct"] = out["sma_spread"].abs() / out["close"]
     out["sma_spread_atr"] = out["sma_spread"].abs() / out["atr"].replace(0, pd.NA)
+    if cfg.momentum_lookback_bars > 0:
+        out["momentum_pct"] = out["close"].pct_change(cfg.momentum_lookback_bars)
+    else:
+        out["momentum_pct"] = 0.0
 
     if out.index.tz is None:
         out.index = out.index.tz_localize("UTC")
@@ -158,6 +262,7 @@ def compute_indicators(df: pd.DataFrame, cfg: StrategyConfig) -> pd.DataFrame:
     out["vwap"] = cum_pv / cum_volume
     out["price_distance_from_vwap_pct"] = (out["close"] - out["vwap"]).abs() / out["close"]
     out["price_distance_from_open_pct"] = (out["close"] - out["session_open"]).abs() / out["close"]
+    out["price_distance_from_trend_ema_pct"] = (out["close"] - out["trend_ema"]).abs() / out["close"]
 
     return out
 
@@ -216,6 +321,10 @@ def build_signal_metrics(last: pd.Series, last_ts, cfg: StrategyConfig) -> dict:
         "sma_spread": float(last["sma_spread"]) if pd.notna(last.get("sma_spread")) else None,
         "sma_spread_pct": float(last["sma_spread_pct"]) if pd.notna(last.get("sma_spread_pct")) else None,
         "sma_spread_atr": float(last["sma_spread_atr"]) if pd.notna(last.get("sma_spread_atr")) else None,
+        "trend_ema": float(last["trend_ema"]) if pd.notna(last.get("trend_ema")) else None,
+        "price_distance_from_trend_ema_pct": float(last["price_distance_from_trend_ema_pct"]) if pd.notna(last.get("price_distance_from_trend_ema_pct")) else None,
+        "momentum_pct": float(last["momentum_pct"]) if pd.notna(last.get("momentum_pct")) else None,
+        "adx_delta": float(last["adx_delta"]) if pd.notna(last.get("adx_delta")) else None,
         "vwap": float(last["vwap"]) if pd.notna(last.get("vwap")) else None,
         "session_open": float(last["session_open"]) if pd.notna(last.get("session_open")) else None,
         "price_distance_from_vwap_pct": float(last["price_distance_from_vwap_pct"]) if pd.notna(last.get("price_distance_from_vwap_pct")) else None,
@@ -253,6 +362,42 @@ def _side_specific_checks(side: str, metrics: dict, cfg: StrategyConfig) -> tupl
         metrics["price_distance_from_open_pct"] is not None
         and metrics["price_distance_from_open_pct"] >= cfg.min_price_distance_from_open_pct
     )
+    trend_ema_distance_min = cfg.min_trend_ema_distance_pct_for(side)
+    trend_ema_ok = True
+    if cfg.trend_ema_period > 0:
+        if side == "long":
+            trend_ema_ok = (
+                metrics["trend_ema"] is not None
+                and metrics["price"] is not None
+                and metrics["sma_fast"] is not None
+                and metrics["price"] > metrics["trend_ema"]
+                and metrics["sma_fast"] >= metrics["trend_ema"]
+            )
+        else:
+            trend_ema_ok = (
+                metrics["trend_ema"] is not None
+                and metrics["price"] is not None
+                and metrics["sma_fast"] is not None
+                and metrics["price"] < metrics["trend_ema"]
+                and metrics["sma_fast"] <= metrics["trend_ema"]
+            )
+        if trend_ema_ok and trend_ema_distance_min > 0:
+            trend_ema_ok = (
+                metrics["price_distance_from_trend_ema_pct"] is not None
+                and metrics["price_distance_from_trend_ema_pct"] >= trend_ema_distance_min
+            )
+
+    min_momentum_pct = cfg.min_momentum_pct_for(side)
+    momentum_ok = True
+    if cfg.momentum_lookback_bars > 0 and min_momentum_pct > 0:
+        if side == "long":
+            momentum_ok = metrics["momentum_pct"] is not None and metrics["momentum_pct"] >= min_momentum_pct
+        else:
+            momentum_ok = metrics["momentum_pct"] is not None and metrics["momentum_pct"] <= (-1.0 * min_momentum_pct)
+
+    adx_delta_ok = cfg.min_adx_delta <= 0 or (
+        metrics["adx_delta"] is not None and metrics["adx_delta"] >= cfg.min_adx_delta
+    )
 
     if not adx_ok:
         reasons.append("adx_below_threshold")
@@ -270,9 +415,15 @@ def _side_specific_checks(side: str, metrics: dict, cfg: StrategyConfig) -> tupl
         reasons.append("too_close_to_vwap")
     if not open_ok:
         reasons.append("too_close_to_session_open")
+    if not trend_ema_ok:
+        reasons.append("trend_ema_filter_failed")
+    if not momentum_ok:
+        reasons.append("momentum_filter_failed")
+    if not adx_delta_ok:
+        reasons.append("adx_not_accelerating")
 
     return all(
-        [adx_ok, atr_ok, volume_ok, time_window_ok, spread_atr_ok, spread_pct_ok, vwap_ok, open_ok]
+        [adx_ok, atr_ok, volume_ok, time_window_ok, spread_atr_ok, spread_pct_ok, vwap_ok, open_ok, trend_ema_ok, momentum_ok, adx_delta_ok]
     ), reasons
 
 
@@ -290,6 +441,7 @@ def evaluate_signal_from_metrics(metrics: dict, cfg: StrategyConfig) -> tuple[st
         metrics.get("adx") or 0.0,
         (metrics.get("sma_spread_atr") or 0.0) * 10.0,
         (metrics.get("volume_ratio") or 0.0) * 5.0,
+        abs(metrics.get("momentum_pct") or 0.0) * 1000.0,
     ]
     metrics["signal_strength"] = round(sum(strength_terms), 6)
 

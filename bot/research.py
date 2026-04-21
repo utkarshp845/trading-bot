@@ -13,7 +13,7 @@ from bot.broker_alpaca import get_historical_bars, make_clients
 from bot.metrics import add_condition_buckets, best_worst_conditions, closed_trade_summary, max_drawdown, summarize_by_group
 from bot.paths import REPORTS_DIR, ensure_runtime_dirs
 from bot.risk import RiskConfig
-from bot.strategy_ma import StrategyConfig, compute_indicators, generate_signal, parse_entry_windows
+from bot.strategy_ma import StrategyConfig, build_strategy_config_from_env, compute_indicators, generate_signal
 from bot.trade_controls import ReplayState, compute_entry_qty, evaluate_replay_entry, record_replay_entry, record_replay_exit, sync_replay_day
 
 
@@ -38,59 +38,8 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _env_optional_float(name: str) -> float | None:
-    raw = os.getenv(name)
-    if raw is None or not raw.strip():
-        return None
-    return float(raw)
-
-
-def _env_optional_int(name: str) -> int | None:
-    raw = os.getenv(name)
-    if raw is None or not raw.strip():
-        return None
-    return int(raw)
-
-
 def build_strategy_config(timeframe_minutes: int) -> StrategyConfig:
-    default_windows = ((940, 1130), (1400, 1545))
-    return StrategyConfig(
-        sma_fast=int(os.getenv("SMA_FAST", "20")),
-        sma_slow=int(os.getenv("SMA_SLOW", "50")),
-        adx_period=int(os.getenv("ADX_PERIOD", "14")),
-        adx_threshold=float(os.getenv("ADX_THRESHOLD", "20")),
-        atr_period=int(os.getenv("ATR_PERIOD", "14")),
-        atr_max_pct=float(os.getenv("ATR_MAX_PCT", "0.0045")),
-        volume_ma_period=int(os.getenv("VOLUME_MA_PERIOD", "20")),
-        volume_min_multiplier=float(os.getenv("VOLUME_MIN_MULTIPLIER", os.getenv("VOLUME_THRESHOLD_MULTIPLIER", "0.8"))),
-        timeframe_minutes=timeframe_minutes,
-        trail_atr_multiplier=float(os.getenv("TRAIL_ATR_MULTIPLIER", "1.5")),
-        max_bars_in_trade=int(os.getenv("MAX_BARS_IN_TRADE", "12")),
-        long_adx_threshold=_env_optional_float("LONG_ADX_THRESHOLD"),
-        short_adx_threshold=_env_optional_float("SHORT_ADX_THRESHOLD"),
-        long_atr_max_pct=_env_optional_float("LONG_ATR_MAX_PCT"),
-        short_atr_max_pct=_env_optional_float("SHORT_ATR_MAX_PCT"),
-        long_volume_min_multiplier=_env_optional_float("LONG_VOLUME_MIN_MULTIPLIER"),
-        short_volume_min_multiplier=_env_optional_float("SHORT_VOLUME_MIN_MULTIPLIER"),
-        min_sma_spread_atr_mult=float(os.getenv("MIN_SMA_SPREAD_ATR_MULT", "0")),
-        min_sma_spread_pct=float(os.getenv("MIN_SMA_SPREAD_PCT", "0")),
-        use_vwap_filter=_env_flag("USE_VWAP_FILTER", False),
-        min_price_distance_from_vwap_pct=float(os.getenv("MIN_PRICE_DISTANCE_FROM_VWAP_PCT", "0")),
-        use_session_open_filter=_env_flag("USE_SESSION_OPEN_FILTER", False),
-        min_price_distance_from_open_pct=float(os.getenv("MIN_PRICE_DISTANCE_FROM_OPEN_PCT", "0")),
-        entry_windows=parse_entry_windows(os.getenv("ENTRY_WINDOWS"), default_windows),
-        long_entry_windows=parse_entry_windows(os.getenv("LONG_ENTRY_WINDOWS"), default_windows),
-        short_entry_windows=parse_entry_windows(os.getenv("SHORT_ENTRY_WINDOWS"), default_windows),
-        long_trail_atr_multiplier=_env_optional_float("LONG_TRAIL_ATR_MULTIPLIER"),
-        short_trail_atr_multiplier=_env_optional_float("SHORT_TRAIL_ATR_MULTIPLIER"),
-        long_max_bars_in_trade=_env_optional_int("LONG_MAX_BARS_IN_TRADE"),
-        short_max_bars_in_trade=_env_optional_int("SHORT_MAX_BARS_IN_TRADE"),
-        enable_breakeven_stop=_env_flag("ENABLE_BREAKEVEN_STOP", False),
-        breakeven_after_atr_multiple=float(os.getenv("BREAKEVEN_AFTER_ATR_MULTIPLE", "1.0")),
-        enable_profit_lock=_env_flag("ENABLE_PROFIT_LOCK", False),
-        profit_lock_after_atr_multiple=float(os.getenv("PROFIT_LOCK_AFTER_ATR_MULTIPLE", "2.0")),
-        profit_lock_atr_multiple=float(os.getenv("PROFIT_LOCK_ATR_MULTIPLE", "0.5")),
-    )
+    return build_strategy_config_from_env(timeframe_minutes)
 
 
 def apply_slippage(price: float, side: str, slippage_per_share: float) -> float:

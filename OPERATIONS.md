@@ -65,10 +65,10 @@ Run the historical replay / walk-forward report:
 docker compose run --rm research
 ```
 
-Small-account SPY paper replay:
+Small-account BTC paper rehearsal:
 
 ```powershell
-docker compose run --rm paper-research
+python -m bot.profile_runner paper research btc
 ```
 
 Outputs:
@@ -103,17 +103,18 @@ Useful optional env controls:
 
 ## Normal Bot Run
 
-Run one bot cycle:
+Run one BTC bot cycle:
 
 ```powershell
-docker compose run --rm bot
+docker compose run --rm paper
+docker compose run --rm trade
 ```
 
-Profile-specific SPY runners:
+Direct profile runner equivalents:
 
 ```powershell
-docker compose run --rm paper-spy
-docker compose run --rm live-spy
+python -m bot.profile_runner paper trade btc
+python -m bot.profile_runner live trade btc
 ```
 
 Profile-specific validation:
@@ -129,9 +130,9 @@ Current runtime defaults:
 - bot startup waits `20` seconds by default before broker/data checks; override with `STARTUP_DELAY_SECONDS`
 - overnight carrying is disabled by default; override with `ALLOW_OVERNIGHT_HOLDING=true`
 - end-of-day flattening starts `5` minutes before the close by default; override with `FLATTEN_BEFORE_CLOSE_MINUTES`
-- `paper-spy` and `live-spy` select separate Alpaca key pairs from `.env` when `ALPACA_PAPER_*` and `ALPACA_LIVE_*` variables are set
-- `paper-spy` writes runtime artifacts under `runtime/paper`, `live-spy` under `runtime/live`
-- `paper-research` uses `RESEARCH_STARTING_EQUITY=250` by default so paper replay is closer to a small-account test
+- `paper` and `trade` select separate Alpaca key pairs from `.env` when `ALPACA_PAPER_*` and `ALPACA_LIVE_*` variables are set
+- BTC paper writes runtime artifacts under `runtime/paper_btc`, BTC live under `runtime/live_btc`
+- The BTC paper profile mirrors the live BTC strategy so paper runs are a closer dress rehearsal
 
 ## Notes
 

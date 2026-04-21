@@ -40,6 +40,37 @@ class ProfileTests(unittest.TestCase):
             os.environ.clear()
             os.environ.update(original)
 
+    def test_paper_btc_profile_enables_crypto_defaults(self):
+        original = dict(os.environ)
+        try:
+            os.environ.pop("BOT_DATA_DIR", None)
+            os.environ.pop("BOT_LOGS_DIR", None)
+            os.environ.pop("BOT_REPORTS_DIR", None)
+            load_profile("paper", "btc")
+            self.assertEqual(os.environ["ALPACA_PAPER"], "true")
+            self.assertEqual(os.environ["SYMBOL"], "BTC/USD")
+            self.assertEqual(os.environ["IS_CRYPTO"], "true")
+            self.assertEqual(os.environ["ALLOW_OVERNIGHT_HOLDING"], "true")
+            self.assertEqual(os.environ["FLATTEN_BEFORE_CLOSE_MINUTES"], "0")
+            self.assertIn("paper_btc", os.environ["BOT_DATA_DIR"])
+        finally:
+            os.environ.clear()
+            os.environ.update(original)
+
+    def test_hyphenated_profile_name_selects_btc_market(self):
+        original = dict(os.environ)
+        try:
+            os.environ.pop("BOT_DATA_DIR", None)
+            os.environ.pop("BOT_LOGS_DIR", None)
+            os.environ.pop("BOT_REPORTS_DIR", None)
+            load_profile("live-btc")
+            self.assertEqual(os.environ["ALPACA_PAPER"], "false")
+            self.assertEqual(os.environ["SYMBOL"], "BTC/USD")
+            self.assertIn("live_btc", os.environ["BOT_DATA_DIR"])
+        finally:
+            os.environ.clear()
+            os.environ.update(original)
+
     def test_profile_env_overrides_base_env(self):
         original = dict(os.environ)
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -60,6 +91,30 @@ class ProfileTests(unittest.TestCase):
                     load_profile("paper")
                 self.assertEqual(os.environ["RESEARCH_STARTING_EQUITY"], "250")
                 self.assertEqual(os.environ["SYMBOL"], "SPY")
+            finally:
+                os.environ.clear()
+                os.environ.update(original)
+
+    def test_btc_profile_env_overrides_base_env(self):
+        original = dict(os.environ)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "config").mkdir(parents=True, exist_ok=True)
+            (root / ".env").write_text("SYMBOL=SPY\nIS_CRYPTO=false\n", encoding="utf-8")
+            (root / "config" / "paper_btc.env").write_text(
+                "SYMBOL=BTC/USD\nIS_CRYPTO=true\n",
+                encoding="utf-8",
+            )
+            try:
+                os.environ.pop("BOT_DATA_DIR", None)
+                os.environ.pop("BOT_LOGS_DIR", None)
+                os.environ.pop("BOT_REPORTS_DIR", None)
+                os.environ.pop("SYMBOL", None)
+                os.environ.pop("IS_CRYPTO", None)
+                with patch.object(profile_module, "APP_ROOT", root):
+                    load_profile("paper", "btc")
+                self.assertEqual(os.environ["SYMBOL"], "BTC/USD")
+                self.assertEqual(os.environ["IS_CRYPTO"], "true")
             finally:
                 os.environ.clear()
                 os.environ.update(original)

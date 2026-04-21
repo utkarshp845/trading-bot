@@ -1,23 +1,30 @@
-x-btc: &btc
+x-bot: &bot
   build: .
   env_file:
     - .env
-    - config/live_btc.env
   volumes:
     - ./runtime:/app/runtime
 
 services:
   trade:
-    <<: *btc
-    command: ["python", "-m", "bot.profile_runner", "live", "trade"]
+    <<: *bot
+    command: ["python", "-m", "bot.profile_runner", "live", "trade", "btc"]
 
   paper:
-    <<: *btc
-    command: ["python", "-m", "bot.profile_runner", "live", "trade"]
+    <<: *bot
+    command: ["python", "-m", "bot.profile_runner", "paper", "trade", "btc"]
 
   monitor:
-    <<: *btc
-    command: ["python", "-m", "bot.profile_runner", "live", "monitor"]
+    <<: *bot
+    command: ["python", "-m", "bot.profile_runner", "live", "monitor", "btc"]
+
+  live-monitor:
+    <<: *bot
+    command: ["python", "-m", "bot.profile_runner", "live", "monitor", "btc"]
+
+  paper-monitor:
+    <<: *bot
+    command: ["python", "-m", "bot.profile_runner", "paper", "monitor", "btc"]
 
   validate:
     build: .
