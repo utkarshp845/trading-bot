@@ -51,7 +51,7 @@ def _set_profile_defaults(profile: str) -> None:
         os.environ.setdefault("RESEARCH_OUTPUT_STEM", "research_paper_spy")
         os.environ.setdefault("STRATEGY_VERSION", "v1-paper-spy")
     elif profile == "live":
-        os.environ["ALPACA_PAPER"] = "false"
+        os.environ.setdefault("ALPACA_PAPER", "false")
         os.environ.setdefault("RESEARCH_OUTPUT_STEM", "research_live_spy")
         os.environ.setdefault("STRATEGY_VERSION", "v1-live-spy")
     else:
