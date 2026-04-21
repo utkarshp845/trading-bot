@@ -42,6 +42,22 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install validation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Validate deploy profile locally
+        run: |
+          python -m bot.validate_runtime
+          python -m bot.profile_runner "$DEPLOY_PROFILE" validate btc
+
       - name: Validate required secrets
         run: |
           test -n "$EC2_HOST"

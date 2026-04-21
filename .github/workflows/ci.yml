@@ -33,8 +33,14 @@ jobs:
       - name: Run runtime validation
         run: python -m bot.validate_runtime
 
-      - name: Run paper profile validation
+      - name: Run paper SPY profile validation
         run: python -m bot.profile_runner paper validate
 
-      - name: Run live profile validation
+      - name: Run live SPY profile validation
         run: python -m bot.profile_runner live validate
+
+      - name: Run paper BTC profile validation
+        run: python -m bot.profile_runner paper validate btc
+
+      - name: Run live BTC profile validation
+        run: python -m bot.profile_runner live validate btc

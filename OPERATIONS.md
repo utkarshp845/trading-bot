@@ -120,8 +120,8 @@ python -m bot.profile_runner live trade btc
 Profile-specific validation:
 
 ```powershell
-docker compose run --rm paper-validate
-docker compose run --rm live-validate
+python -m bot.profile_runner paper validate btc
+python -m bot.profile_runner live validate btc
 ```
 
 Current runtime defaults:

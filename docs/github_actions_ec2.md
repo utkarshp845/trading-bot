@@ -10,8 +10,8 @@ What it does:
 - syncs the repo to the server
 - uploads the runtime `.env`
 - builds the Docker image on EC2
-- runs `paper-validate` or `live-validate`
-- installs a weekday cron job that runs the chosen profile every 5 minutes in `America/New_York`
+- runs `python -m bot.profile_runner <paper|live> validate btc` on EC2
+- installs a cron job that runs the chosen BTC profile every 5 minutes in `America/New_York`
 
 ## Required GitHub Secrets
 
@@ -104,8 +104,8 @@ If you want to run one profile manually on the server after a deploy:
 
 ```bash
 cd /home/ubuntu/trading-bot
-docker compose run --rm live-spy
-docker compose run --rm paper-spy
+docker compose run --rm trade
+docker compose run --rm paper
 ```
 
 If you want a different schedule, set `CRON_SCHEDULE` before running `deploy/ec2/install_cron.sh`, or edit the script default.
@@ -113,15 +113,7 @@ If you want a different schedule, set `CRON_SCHEDULE` before running `deploy/ec2
 Current default schedule:
 
 - every 5 minutes
-- weekdays only
+- every day
 - `America/New_York` timezone
 
-Because the bot already guards on market hours internally, off-session runs should exit safely.
-
-<<<<<<< HEAD
-Because the bot already guards on market hours internally, off-session runs should exit safely.
-=======
-Because the bot already guards on market hours internally, off-session runs should exit safely.
-
-
->>>>>>> f10202d7c23fd491b4ba345159d16dad46acbff4
+Because the deployed profile is BTC, 24/7 scheduling is the correct default. If you later switch the deployment target back to equities, override `CRON_SCHEDULE` before running the installer.
