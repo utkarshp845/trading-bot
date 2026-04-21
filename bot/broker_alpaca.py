@@ -83,7 +83,11 @@ def get_historical_bars(
             )
             bars = data_client.get_stock_bars(req).df
     except APIError as e:
-        print(f"[alpaca] failed to fetch bars: {e}")
+        msg = str(e)
+        if "401" in msg or "Authorization" in msg:
+            print("[alpaca] 401 Unauthorized — check ALPACA_API_KEY and ALPACA_SECRET_KEY in .env")
+        else:
+            print(f"[alpaca] failed to fetch bars: {e}")
         return pd.DataFrame()
     if bars.empty:
         return bars

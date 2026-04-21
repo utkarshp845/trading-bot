@@ -13,8 +13,6 @@ services:
 
   paper:
     <<: *btc
-    environment:
-      - ALPACA_PAPER=true
     command: ["python", "-m", "bot.profile_runner", "live", "trade"]
 
   monitor:
