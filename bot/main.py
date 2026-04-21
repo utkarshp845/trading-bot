@@ -430,6 +430,7 @@ def main():
     reversal_signal_strength_min = float(os.getenv("REVERSAL_SIGNAL_STRENGTH_MIN", "0"))
     allow_overnight_holding = _env_flag("ALLOW_OVERNIGHT_HOLDING", False)
     flatten_before_close_minutes = max(0, int(os.getenv("FLATTEN_BEFORE_CLOSE_MINUTES", "5")))
+    is_crypto = _env_flag("IS_CRYPTO", False)
 
     ts = utc_iso_now()
     logger.info(
@@ -478,11 +479,14 @@ def main():
         flatten_before_close_minutes=flatten_before_close_minutes,
     )
 
-    market_open = is_market_open(trading)
     used_et_market_fallback = False
-    if market_open is None and _env_flag("ALLOW_ET_MARKET_CLOCK_FALLBACK", False):
-        market_open = is_market_open_now_et()
-        used_et_market_fallback = True
+    if is_crypto:
+        market_open = True
+    else:
+        market_open = is_market_open(trading)
+        if market_open is None and _env_flag("ALLOW_ET_MARKET_CLOCK_FALLBACK", False):
+            market_open = is_market_open_now_et()
+            used_et_market_fallback = True
 
     if market_open is None or not market_open:
         note = "market_clock_unavailable" if market_open is None else "market_closed"
@@ -709,8 +713,19 @@ def main():
         exit_reason = None
         trail_atr_multiplier = cfg.trail_atr_multiplier_for("long")
         max_bars_in_trade = cfg.max_bars_in_trade_for("long")
+        hard_stop_atr_mult = float(os.getenv("HARD_STOP_ATR_MULT", "0"))
 
-        if last_price is not None and v_atr is not None and pos_state.highest_price is not None:
+        if (
+            hard_stop_atr_mult > 0
+            and last_price is not None
+            and v_atr is not None
+            and pos_state.entry_price is not None
+            and float(last_price) < float(pos_state.entry_price) - (hard_stop_atr_mult * float(v_atr))
+        ):
+            desired_action = "SELL"
+            exit_reason = f"long_hard_stop_hit({last_price}<{float(pos_state.entry_price) - hard_stop_atr_mult * float(v_atr):.4f})"
+
+        if desired_action == "HOLD" and last_price is not None and v_atr is not None and pos_state.highest_price is not None:
             trailing_stop = float(pos_state.highest_price) - (trail_atr_multiplier * float(v_atr))
             if cfg.enable_breakeven_stop and pos_state.entry_price is not None and float(last_price) >= (
                 float(pos_state.entry_price) + (cfg.breakeven_after_atr_multiple * float(v_atr))
@@ -747,8 +762,19 @@ def main():
         exit_reason = None
         trail_atr_multiplier = cfg.trail_atr_multiplier_for("short")
         max_bars_in_trade = cfg.max_bars_in_trade_for("short")
+        hard_stop_atr_mult = float(os.getenv("HARD_STOP_ATR_MULT", "0"))
 
-        if last_price is not None and v_atr is not None and pos_state.lowest_price is not None:
+        if (
+            hard_stop_atr_mult > 0
+            and last_price is not None
+            and v_atr is not None
+            and pos_state.entry_price is not None
+            and float(last_price) > float(pos_state.entry_price) + (hard_stop_atr_mult * float(v_atr))
+        ):
+            desired_action = "BUY"
+            exit_reason = f"short_hard_stop_hit({last_price}>{float(pos_state.entry_price) + hard_stop_atr_mult * float(v_atr):.4f})"
+
+        if desired_action == "HOLD" and last_price is not None and v_atr is not None and pos_state.lowest_price is not None:
             trailing_stop = float(pos_state.lowest_price) + (trail_atr_multiplier * float(v_atr))
             if cfg.enable_breakeven_stop and pos_state.entry_price is not None and float(last_price) <= (
                 float(pos_state.entry_price) - (cfg.breakeven_after_atr_multiple * float(v_atr))
@@ -812,6 +838,7 @@ def main():
             max_position_notional_pct,
             target_position_notional_pct=float(os.getenv("TARGET_POSITION_NOTIONAL_PCT", str(max_position_notional_pct))),
             atr_risk_per_trade_pct=float(os.getenv("ATR_RISK_PER_TRADE_PCT", "0.0025")),
+            fractional=is_crypto,
         )
         risk_eval = evaluate_entry_risk(
             RiskConfig(
@@ -916,7 +943,7 @@ def main():
 
     if action == "BUY":
         if pos_qty < 0:
-            cover_qty = int(abs(float(pos_qty)))
+            cover_qty = abs(float(pos_qty)) if is_crypto else int(abs(float(pos_qty)))
             if cover_qty > 0:
                 order_info = place_market_order(trading, symbol, "buy", cover_qty)
                 executed_qty = cover_qty
@@ -929,7 +956,7 @@ def main():
             order_intent = "entry"
     elif action == "SELL":
         if pos_qty > 0:
-            sell_qty = int(float(pos_qty))
+            sell_qty = float(pos_qty) if is_crypto else int(float(pos_qty))
             if sell_qty > 0:
                 order_info = place_market_order(trading, symbol, "sell", sell_qty)
                 executed_qty = sell_qty

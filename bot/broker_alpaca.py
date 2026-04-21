@@ -4,8 +4,8 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 from alpaca.common.exceptions import APIError
 from alpaca.data.enums import DataFeed
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
+from alpaca.data.historical import CryptoHistoricalDataClient, StockHistoricalDataClient
+from alpaca.data.requests import CryptoBarsRequest, StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, TimeInForce
@@ -37,17 +37,21 @@ def normalize_order_status(status) -> str | None:
         text = text.split(".")[-1]
     return text.upper()
 
-def make_clients() -> tuple[TradingClient, StockHistoricalDataClient]:
+def make_clients() -> tuple[TradingClient, StockHistoricalDataClient | CryptoHistoricalDataClient]:
     key = os.environ["ALPACA_API_KEY"]
     secret = os.environ["ALPACA_SECRET_KEY"]
     paper = _env_bool("ALPACA_PAPER", True)
+    is_crypto = _env_bool("IS_CRYPTO", False)
 
     trading = TradingClient(api_key=key, secret_key=secret, paper=paper)
-    data = StockHistoricalDataClient(api_key=key, secret_key=secret)
+    if is_crypto:
+        data = CryptoHistoricalDataClient(api_key=key, secret_key=secret)
+    else:
+        data = StockHistoricalDataClient(api_key=key, secret_key=secret)
     return trading, data
 
 def get_historical_bars(
-    data_client: StockHistoricalDataClient,
+    data_client: StockHistoricalDataClient | CryptoHistoricalDataClient,
     symbol: str,
     timeframe_minutes: int,
     start: datetime,
@@ -55,25 +59,30 @@ def get_historical_bars(
     limit: int | None = None,
 ) -> pd.DataFrame:
     tf = TimeFrame(timeframe_minutes, TimeFrameUnit.Minute)
+    is_crypto = isinstance(data_client, CryptoHistoricalDataClient)
 
-    # always use IEX feed (works on free accounts and avoids SIP-only errors)
-    feed = DataFeed.IEX
-
-    req = StockBarsRequest(
-        symbol_or_symbols=symbol,
-        timeframe=tf,
-        start=start,
-        end=end,
-        limit=limit,
-        adjustment="raw",
-        feed=feed,
-    )
     try:
-        bars = data_client.get_stock_bars(req).df
+        if is_crypto:
+            req = CryptoBarsRequest(
+                symbol_or_symbols=symbol,
+                timeframe=tf,
+                start=start,
+                end=end,
+                limit=limit,
+            )
+            bars = data_client.get_crypto_bars(req).df
+        else:
+            req = StockBarsRequest(
+                symbol_or_symbols=symbol,
+                timeframe=tf,
+                start=start,
+                end=end,
+                limit=limit,
+                adjustment="raw",
+                feed=DataFeed.IEX,
+            )
+            bars = data_client.get_stock_bars(req).df
     except APIError as e:
-        # If the account does not have access to the requested feed (e.g. SIP),
-        # surface a warning and return an empty frame so the bot can fall back
-        # to the "no_bars" path instead of crashing.
         print(f"[alpaca] failed to fetch bars: {e}")
         return pd.DataFrame()
     if bars.empty:
@@ -89,7 +98,7 @@ def get_historical_bars(
     return bars
 
 
-def get_recent_bars(data_client: StockHistoricalDataClient, symbol: str, timeframe_minutes: int, limit: int = 200) -> pd.DataFrame:
+def get_recent_bars(data_client: StockHistoricalDataClient | CryptoHistoricalDataClient, symbol: str, timeframe_minutes: int, limit: int = 200) -> pd.DataFrame:
     """
     Fetch recent bars. For SMA(50) on 5-min bars, 200 bars is plenty for warmup.
     """
@@ -116,7 +125,7 @@ def get_account_snapshot(trading: TradingClient) -> tuple[float | None, float | 
     except Exception:
         return None, None
 
-def place_market_order(trading: TradingClient, symbol: str, side: str, qty: int):
+def place_market_order(trading: TradingClient, symbol: str, side: str, qty: float):
     if side not in ("buy", "sell"):
         raise ValueError("side must be 'buy' or 'sell'")
 
@@ -124,7 +133,7 @@ def place_market_order(trading: TradingClient, symbol: str, side: str, qty: int)
         symbol=symbol,
         qty=qty,
         side=OrderSide.BUY if side == "buy" else OrderSide.SELL,
-        time_in_force=TimeInForce.DAY,
+        time_in_force=TimeInForce.GTC if _env_bool("IS_CRYPTO", False) else TimeInForce.DAY,
     )
     return trading.submit_order(order_data=order)
 
