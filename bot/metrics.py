@@ -88,6 +88,16 @@ def add_condition_buckets(df: pd.DataFrame) -> pd.DataFrame:
         out["session_bucket"] = out["entry_window_bucket"].map(
             lambda value: "morning" if isinstance(value, str) and value.startswith(("09", "10", "11")) else "afternoon" if isinstance(value, str) else "unknown"
         )
+    if "entry_regime_on" in out.columns:
+        out["regime_bucket"] = out["entry_regime_on"].map(
+            lambda value: "regime_on" if value is True else "regime_off" if value is False else "unknown"
+        )
+    if "entry_pullback_depth_bucket" in out.columns:
+        out["pullback_depth_bucket"] = out["entry_pullback_depth_bucket"].fillna("n/a")
+    if "entry_after_prior_loss" in out.columns:
+        out["prior_loss_bucket"] = out["entry_after_prior_loss"].map(
+            lambda value: "after_loss" if value is True else "not_after_loss" if value is False else "unknown"
+        )
     if "entry_adx" in out.columns:
         out["adx_bucket"] = pd.cut(
             out["entry_adx"],

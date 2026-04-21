@@ -23,6 +23,8 @@ class BotState:
     daily_start_equity_date: Optional[str]
     last_entry_signal_strength: Optional[float]
     last_entry_signal_side: Optional[str]
+    entry_failures_today: int
+    entry_failures_day_utc: str
 
 
 @dataclass
@@ -79,6 +81,10 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _utc_day() -> str:
+    return _utc_now().date().isoformat()
+
+
 def connect() -> sqlite3.Connection:
     ensure_runtime_dirs()
     conn = sqlite3.connect(DB_PATH)
@@ -99,7 +105,9 @@ def init_db(conn: sqlite3.Connection) -> None:
             daily_start_equity REAL,
             daily_start_equity_date TEXT,
             last_entry_signal_strength REAL,
-            last_entry_signal_side TEXT
+            last_entry_signal_side TEXT,
+            entry_failures_today INTEGER NOT NULL DEFAULT 0,
+            entry_failures_day_utc TEXT NOT NULL DEFAULT ''
         );
         """
     )
@@ -241,6 +249,8 @@ def init_db(conn: sqlite3.Connection) -> None:
         ("daily_start_equity_date", "TEXT"),
         ("last_entry_signal_strength", "REAL"),
         ("last_entry_signal_side", "TEXT"),
+        ("entry_failures_today", "INTEGER NOT NULL DEFAULT 0"),
+        ("entry_failures_day_utc", "TEXT NOT NULL DEFAULT ''"),
     ):
         if name not in state_cols:
             conn.execute(f"ALTER TABLE state ADD COLUMN {name} {sql_type};")
@@ -291,10 +301,11 @@ def init_db(conn: sqlite3.Connection) -> None:
 
 def get_state(conn: sqlite3.Connection, current_equity: float | None = None) -> BotState:
     today = trading_day_et()
+    today_utc = _utc_day()
     row = conn.execute(
         """
         SELECT last_trade_ts, trades_today, trades_today_date, consecutive_losses, daily_start_equity, daily_start_equity_date,
-               last_entry_signal_strength, last_entry_signal_side
+               last_entry_signal_strength, last_entry_signal_side, entry_failures_today, entry_failures_day_utc
         FROM state
         WHERE id=1;
         """
@@ -305,14 +316,14 @@ def get_state(conn: sqlite3.Connection, current_equity: float | None = None) -> 
             """
             INSERT INTO state (
                 id, last_trade_ts, trades_today, trades_today_date, consecutive_losses, daily_start_equity, daily_start_equity_date,
-                last_entry_signal_strength, last_entry_signal_side
+                last_entry_signal_strength, last_entry_signal_side, entry_failures_today, entry_failures_day_utc
             )
-            VALUES (1, NULL, 0, ?, 0, ?, ?, NULL, NULL);
+            VALUES (1, NULL, 0, ?, 0, ?, ?, NULL, NULL, 0, ?);
             """,
-            (today, current_equity, today if current_equity is not None else None),
+            (today, current_equity, today if current_equity is not None else None, today_utc),
         )
         conn.commit()
-        return BotState(None, 0, today, 0, current_equity, today if current_equity is not None else None, None, None)
+        return BotState(None, 0, today, 0, current_equity, today if current_equity is not None else None, None, None, 0, today_utc)
 
     last_trade_ts = row["last_trade_ts"]
     trades_today = row["trades_today"]
@@ -322,6 +333,8 @@ def get_state(conn: sqlite3.Connection, current_equity: float | None = None) -> 
     daily_start_equity_date = row["daily_start_equity_date"]
     last_entry_signal_strength = row["last_entry_signal_strength"]
     last_entry_signal_side = row["last_entry_signal_side"]
+    entry_failures_today = row["entry_failures_today"] if row["entry_failures_today"] is not None else 0
+    entry_failures_day_utc = row["entry_failures_day_utc"] or today_utc
 
     if trades_today_date != today:
         trades_today = 0
@@ -347,6 +360,15 @@ def get_state(conn: sqlite3.Connection, current_equity: float | None = None) -> 
         )
         conn.commit()
 
+    if entry_failures_day_utc != today_utc:
+        entry_failures_today = 0
+        entry_failures_day_utc = today_utc
+        conn.execute(
+            "UPDATE state SET entry_failures_today=?, entry_failures_day_utc=? WHERE id=1;",
+            (entry_failures_today, entry_failures_day_utc),
+        )
+        conn.commit()
+
     return BotState(
         last_trade_ts=last_trade_ts,
         trades_today=trades_today,
@@ -356,6 +378,8 @@ def get_state(conn: sqlite3.Connection, current_equity: float | None = None) -> 
         daily_start_equity_date=daily_start_equity_date,
         last_entry_signal_strength=last_entry_signal_strength,
         last_entry_signal_side=last_entry_signal_side,
+        entry_failures_today=entry_failures_today,
+        entry_failures_day_utc=entry_failures_day_utc,
     )
 
 
@@ -378,6 +402,14 @@ def set_last_entry_signal(conn: sqlite3.Connection, signal_strength: float | Non
     conn.execute(
         "UPDATE state SET last_entry_signal_strength=?, last_entry_signal_side=? WHERE id=1;",
         (signal_strength, signal_side),
+    )
+    conn.commit()
+
+
+def increment_entry_failures_today(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "UPDATE state SET entry_failures_today = entry_failures_today + 1, entry_failures_day_utc=? WHERE id=1;",
+        (_utc_day(),),
     )
     conn.commit()
 

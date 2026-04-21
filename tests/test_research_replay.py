@@ -27,15 +27,18 @@ class ResearchReplayTests(unittest.TestCase):
             index=index,
         )
 
-    def test_reversal_threshold_can_prevent_weak_reversal_exit(self):
-        bars = self._bars(periods=4)
+    def test_regime_invalidation_forces_exit(self):
+        bars = self._bars(periods=3)
         metrics_sequence = [
-            {"price": 100.0, "atr": 1.0, "bar_ts": bars.index[0].isoformat(), "signal_strength": 50.0},
-            {"price": 101.0, "atr": 1.0, "bar_ts": bars.index[1].isoformat(), "signal_strength": 10.0},
-            {"price": 102.0, "atr": 1.0, "bar_ts": bars.index[2].isoformat(), "signal_strength": 10.0},
-            {"price": 103.0, "atr": 1.0, "bar_ts": bars.index[3].isoformat(), "signal_strength": 10.0},
+            {"price": 100.0, "atr": 1.0, "bar_ts": bars.index[0].isoformat(), "signal_strength": 50.0, "regime_on": True, "regime_bearish": False},
+            {"price": 101.0, "atr": 1.0, "bar_ts": bars.index[1].isoformat(), "signal_strength": 25.0, "regime_on": True, "regime_bearish": False},
+            {"price": 100.5, "atr": 1.0, "bar_ts": bars.index[2].isoformat(), "signal_strength": 15.0, "regime_on": False, "regime_bearish": False},
         ]
-        signals = [("LONG", ["long_entry_filters_passed"]), ("SHORT", ["short_entry_filters_passed"]), ("LONG", ["long_entry_filters_passed"]), ("LONG", ["long_entry_filters_passed"])]
+        signals = [
+            ("LONG", ["long_entry_filters_passed"]),
+            ("HOLD", ["trend_up_no_entry"]),
+            ("HOLD", ["regime_filter_failed"]),
+        ]
 
         def fake_generate_signal(_slice_df, _cfg):
             idx = len(_slice_df) - 1
@@ -51,6 +54,7 @@ class ResearchReplayTests(unittest.TestCase):
             "TARGET_POSITION_NOTIONAL_PCT": "0.02",
             "ATR_RISK_PER_TRADE_PCT": "0.0025",
             "COOLDOWN_BARS": "0",
+            "HARD_STOP_ATR_MULT": "0",
             "REENTRY_REQUIRES_SIGNAL_STRENGTH_IMPROVEMENT": "false",
             "REENTRY_MIN_SIGNAL_STRENGTH_DELTA": "0",
             "RESEARCH_COMMISSION_PER_TRADE": "0",
@@ -58,13 +62,53 @@ class ResearchReplayTests(unittest.TestCase):
         }
 
         with patch("bot.research.compute_indicators", return_value=bars), patch("bot.research.generate_signal", side_effect=fake_generate_signal):
-            with patch.dict(os.environ, {**base_env, "REVERSAL_SIGNAL_STRENGTH_MIN": "0"}, clear=False):
-                _, weak_threshold_trades = run_replay(bars, build_strategy_config(5), "fixed", 1, 100000)
-            with patch.dict(os.environ, {**base_env, "REVERSAL_SIGNAL_STRENGTH_MIN": "25"}, clear=False):
-                _, stronger_threshold_trades = run_replay(bars, build_strategy_config(5), "fixed", 1, 100000)
+            with patch.dict(os.environ, base_env, clear=False):
+                _, trades = run_replay(bars, build_strategy_config(5), "fixed", 1, 100000)
 
-        self.assertEqual(len(weak_threshold_trades), 1)
-        self.assertEqual(len(stronger_threshold_trades), 0)
+        self.assertEqual(len(trades), 1)
+        self.assertEqual(trades[0]["side"], "long")
+        self.assertEqual(trades[0]["exit_ts"], str(bars.index[2]))
+
+    def test_short_signals_are_diagnostic_only_when_shorts_disabled(self):
+        bars = self._bars(periods=3)
+
+        def fake_generate_signal(_slice_df, _cfg):
+            idx = len(_slice_df) - 1
+            return (
+                "SHORT",
+                {
+                    "price": 100.0 - idx,
+                    "atr": 1.0,
+                    "bar_ts": bars.index[idx].isoformat(),
+                    "signal_strength": 45.0,
+                    "regime_on": False,
+                    "regime_bearish": True,
+                },
+                ["short_entry_filters_passed"],
+            )
+
+        base_env = {
+            "ALLOW_SHORTS": "false",
+            "MAX_TRADES_PER_DAY": "5",
+            "MAX_DAILY_DRAWDOWN_PCT": "0.01",
+            "MAX_DAILY_LOSS": "0",
+            "MAX_CONSECUTIVE_LOSSES": "3",
+            "MAX_POSITION_NOTIONAL_PCT": "0.02",
+            "TARGET_POSITION_NOTIONAL_PCT": "0.02",
+            "ATR_RISK_PER_TRADE_PCT": "0.0025",
+            "COOLDOWN_BARS": "0",
+            "REENTRY_REQUIRES_SIGNAL_STRENGTH_IMPROVEMENT": "false",
+            "REENTRY_MIN_SIGNAL_STRENGTH_DELTA": "0",
+            "RESEARCH_COMMISSION_PER_TRADE": "0",
+            "RESEARCH_SLIPPAGE_PER_SHARE": "0",
+        }
+
+        with patch("bot.research.compute_indicators", return_value=bars), patch("bot.research.generate_signal", side_effect=fake_generate_signal):
+            with patch.dict(os.environ, base_env, clear=False):
+                equity_df, trades = run_replay(bars, build_strategy_config(5), "fixed", 1, 100000)
+
+        self.assertEqual(trades, [])
+        self.assertTrue(any("short_signal_diagnostic_only" in reasons for reasons in equity_df["reasons"].tolist()))
 
     def test_research_pipeline_smoke_scenarios(self):
         bars = self._bars()

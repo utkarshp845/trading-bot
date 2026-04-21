@@ -20,18 +20,25 @@ from bot.research import build_strategy_config, run_replay, summarize_replay, wa
 ET = ZoneInfo("America/New_York")
 
 OPTIMIZED_KEYS = [
+    "ALLOW_SHORTS",
     "SMA_FAST",
     "SMA_SLOW",
     "ADX_THRESHOLD",
     "LONG_ADX_THRESHOLD",
     "ATR_MAX_PCT",
     "LONG_ATR_MAX_PCT",
-    "VOLUME_MIN_MULTIPLIER",
-    "LONG_VOLUME_MIN_MULTIPLIER",
-    "SHORT_VOLUME_MIN_MULTIPLIER",
+    "MIN_VOLUME_RATIO",
     "TRAIL_ATR_MULTIPLIER",
+    "TRAIL_AFTER_ATR_MULTIPLE",
     "MAX_BARS_IN_TRADE",
-    "REVERSAL_SIGNAL_STRENGTH_MIN",
+    "MAX_TRADES_PER_DAY",
+    "COOLDOWN_BARS",
+    "REGIME_ADX_MIN",
+    "REGIME_MIN_SLOPE_PCT",
+    "PULLBACK_MIN_DEPTH_ATR",
+    "PULLBACK_MAX_DEPTH_ATR",
+    "REACCEL_MIN_BAR_BODY_ATR",
+    "SPIKE_BAR_MAX_RANGE_ATR",
     "ENTRY_WINDOWS",
     "LONG_ENTRY_WINDOWS",
     "SHORT_ENTRY_WINDOWS",
@@ -59,19 +66,26 @@ def _parse_grid(raw: str | None, fallback: list[str]) -> list[str]:
 
 def _candidate_grid() -> dict[str, list[str]]:
     return {
+        "ALLOW_SHORTS": ["false"],
         "SMA_FAST": _parse_grid(os.getenv("OPT_SMA_FAST_VALUES"), ["10", "20", "30"]),
         "SMA_SLOW": _parse_grid(os.getenv("OPT_SMA_SLOW_VALUES"), ["40", "50", "80"]),
         "ADX_THRESHOLD": _parse_grid(os.getenv("OPT_ADX_THRESHOLD_VALUES"), ["20", "25", "30"]),
         "LONG_ADX_THRESHOLD": _parse_grid(os.getenv("OPT_LONG_ADX_THRESHOLD_VALUES"), ["25", "30", "35"]),
         "ATR_MAX_PCT": _parse_grid(os.getenv("OPT_ATR_MAX_PCT_VALUES"), ["0.0030", "0.0035", "0.0045"]),
         "LONG_ATR_MAX_PCT": _parse_grid(os.getenv("OPT_LONG_ATR_MAX_PCT_VALUES"), ["0.0025", "0.0030", "0.0035"]),
-        "VOLUME_MIN_MULTIPLIER": _parse_grid(os.getenv("OPT_VOLUME_MIN_MULTIPLIER_VALUES"), ["0.90", "1.00", "1.05"]),
-        "LONG_VOLUME_MIN_MULTIPLIER": _parse_grid(os.getenv("OPT_LONG_VOLUME_MIN_MULTIPLIER_VALUES"), ["1.00", "1.10", "1.15"]),
-        "SHORT_VOLUME_MIN_MULTIPLIER": _parse_grid(os.getenv("OPT_SHORT_VOLUME_MIN_MULTIPLIER_VALUES"), ["0.90", "1.00", "1.05"]),
+        "MIN_VOLUME_RATIO": _parse_grid(os.getenv("OPT_MIN_VOLUME_RATIO_VALUES"), ["1.00", "1.10", "1.20"]),
         "TRAIL_ATR_MULTIPLIER": _parse_grid(os.getenv("OPT_TRAIL_ATR_MULTIPLIER_VALUES"), ["1.0", "1.5", "2.0"]),
-        "MAX_BARS_IN_TRADE": _parse_grid(os.getenv("OPT_MAX_BARS_IN_TRADE_VALUES"), ["6", "12", "18"]),
-        "REVERSAL_SIGNAL_STRENGTH_MIN": _parse_grid(os.getenv("OPT_REVERSAL_SIGNAL_STRENGTH_VALUES"), ["20", "35", "50"]),
-        "ENTRY_WINDOWS": _parse_grid(os.getenv("OPT_ENTRY_WINDOWS_VALUES"), ["0940-1130", "0940-1130,1400-1545"]),
+        "TRAIL_AFTER_ATR_MULTIPLE": _parse_grid(os.getenv("OPT_TRAIL_AFTER_ATR_MULTIPLE_VALUES"), ["1.0", "1.5", "2.0"]),
+        "MAX_BARS_IN_TRADE": _parse_grid(os.getenv("OPT_MAX_BARS_IN_TRADE_VALUES"), ["12", "18", "24"]),
+        "MAX_TRADES_PER_DAY": _parse_grid(os.getenv("OPT_MAX_TRADES_PER_DAY_VALUES"), ["3", "4", "5"]),
+        "COOLDOWN_BARS": _parse_grid(os.getenv("OPT_COOLDOWN_BARS_VALUES"), ["4", "6", "8"]),
+        "REGIME_ADX_MIN": _parse_grid(os.getenv("OPT_REGIME_ADX_MIN_VALUES"), ["18", "22"]),
+        "REGIME_MIN_SLOPE_PCT": _parse_grid(os.getenv("OPT_REGIME_MIN_SLOPE_PCT_VALUES"), ["0.0015", "0.0020", "0.0030"]),
+        "PULLBACK_MIN_DEPTH_ATR": _parse_grid(os.getenv("OPT_PULLBACK_MIN_DEPTH_ATR_VALUES"), ["0.3", "0.4", "0.5"]),
+        "PULLBACK_MAX_DEPTH_ATR": _parse_grid(os.getenv("OPT_PULLBACK_MAX_DEPTH_ATR_VALUES"), ["1.0", "1.2", "1.5"]),
+        "REACCEL_MIN_BAR_BODY_ATR": _parse_grid(os.getenv("OPT_REACCEL_MIN_BAR_BODY_ATR_VALUES"), ["0.15", "0.20", "0.25"]),
+        "SPIKE_BAR_MAX_RANGE_ATR": _parse_grid(os.getenv("OPT_SPIKE_BAR_MAX_RANGE_ATR_VALUES"), ["1.5", "1.8", "2.0"]),
+        "ENTRY_WINDOWS": _parse_grid(os.getenv("OPT_ENTRY_WINDOWS_VALUES"), ["0000-2359"]),
     }
 
 
@@ -88,6 +102,8 @@ def iter_candidates() -> list[dict[str, str]]:
         if float(candidate["LONG_ADX_THRESHOLD"]) < float(candidate["ADX_THRESHOLD"]):
             continue
         if float(candidate["LONG_ATR_MAX_PCT"]) > float(candidate["ATR_MAX_PCT"]):
+            continue
+        if float(candidate["PULLBACK_MIN_DEPTH_ATR"]) >= float(candidate["PULLBACK_MAX_DEPTH_ATR"]):
             continue
         candidate["LONG_ENTRY_WINDOWS"] = candidate["ENTRY_WINDOWS"]
         candidate["SHORT_ENTRY_WINDOWS"] = candidate["ENTRY_WINDOWS"]
@@ -162,6 +178,10 @@ def score_candidate(full_summary: dict, train_summary: dict, test_summary: dict)
     if trade_count <= 0:
         return -1_000_000.0
 
+    trades_per_day = float(full_summary.get("trades_per_day") or 0.0)
+    if trades_per_day < 1.0 or trades_per_day > 5.0:
+        return -500_000.0 - abs(trades_per_day - 3.0) * 1000.0
+
     score = float(test_summary.get("net_pnl") or 0.0) * 10.0
     score += float(test_summary.get("positive_windows") or 0) * 8.0
     score += float(train_summary.get("positive_windows") or 0) * 2.0
@@ -177,6 +197,7 @@ def score_candidate(full_summary: dict, train_summary: dict, test_summary: dict)
     train_net = float(train_summary.get("net_pnl") or 0.0)
     test_net = float(test_summary.get("net_pnl") or 0.0)
     score -= abs(train_net - test_net) * 0.5
+    score -= abs(trades_per_day - 3.0) * 5.0
     return round(score, 6)
 
 
@@ -301,10 +322,11 @@ def write_report(path_md, path_json, payload: dict) -> None:
             f"wins={row['positive_test_windows']}/{row['window_count']} "
             f"sma={params['SMA_FAST']}/{params['SMA_SLOW']} "
             f"adx={params['ADX_THRESHOLD']} "
-            f"vol={params['VOLUME_MIN_MULTIPLIER']} "
+            f"regime_adx={params['REGIME_ADX_MIN']} "
+            f"pullback={params['PULLBACK_MIN_DEPTH_ATR']}-{params['PULLBACK_MAX_DEPTH_ATR']} "
             f"trail={params['TRAIL_ATR_MULTIPLIER']} "
             f"bars={params['MAX_BARS_IN_TRADE']} "
-            f"reversal={params['REVERSAL_SIGNAL_STRENGTH_MIN']} "
+            f"cooldown={params['COOLDOWN_BARS']} "
             f"windows={params['ENTRY_WINDOWS']}"
         )
 

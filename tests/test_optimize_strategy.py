@@ -16,12 +16,18 @@ class OptimizeStrategyTests(unittest.TestCase):
                 "OPT_LONG_ADX_THRESHOLD_VALUES": "25",
                 "OPT_ATR_MAX_PCT_VALUES": "0.0045",
                 "OPT_LONG_ATR_MAX_PCT_VALUES": "0.0035",
-                "OPT_VOLUME_MIN_MULTIPLIER_VALUES": "1.0",
-                "OPT_LONG_VOLUME_MIN_MULTIPLIER_VALUES": "1.1",
-                "OPT_SHORT_VOLUME_MIN_MULTIPLIER_VALUES": "1.0",
+                "OPT_MIN_VOLUME_RATIO_VALUES": "1.1",
                 "OPT_TRAIL_ATR_MULTIPLIER_VALUES": "1.5",
+                "OPT_TRAIL_AFTER_ATR_MULTIPLE_VALUES": "1.5",
                 "OPT_MAX_BARS_IN_TRADE_VALUES": "12",
-                "OPT_REVERSAL_SIGNAL_STRENGTH_VALUES": "35",
+                "OPT_MAX_TRADES_PER_DAY_VALUES": "4",
+                "OPT_COOLDOWN_BARS_VALUES": "6",
+                "OPT_REGIME_ADX_MIN_VALUES": "18",
+                "OPT_REGIME_MIN_SLOPE_PCT_VALUES": "0.002",
+                "OPT_PULLBACK_MIN_DEPTH_ATR_VALUES": "0.4",
+                "OPT_PULLBACK_MAX_DEPTH_ATR_VALUES": "1.2",
+                "OPT_REACCEL_MIN_BAR_BODY_ATR_VALUES": "0.2",
+                "OPT_SPIKE_BAR_MAX_RANGE_ATR_VALUES": "1.8",
                 "OPT_ENTRY_WINDOWS_VALUES": "0940-1130",
             },
             clear=False,
@@ -33,7 +39,7 @@ class OptimizeStrategyTests(unittest.TestCase):
         self.assertEqual(candidates[0]["SMA_SLOW"], "50")
 
     def test_score_candidate_rewards_robust_test_results(self):
-        weak_full = {"profit_factor": 0.95, "max_drawdown": -0.02}
+        weak_full = {"profit_factor": 0.95, "max_drawdown": -0.02, "trades_per_day": 2.0}
         weak_train = {"net_pnl": 2.0, "positive_windows": 2}
         weak_test = {
             "trade_count": 20,
@@ -43,7 +49,7 @@ class OptimizeStrategyTests(unittest.TestCase):
             "median_window_net_pnl": -0.1,
             "max_drawdown": -0.03,
         }
-        strong_full = {"profit_factor": 1.15, "max_drawdown": -0.01}
+        strong_full = {"profit_factor": 1.15, "max_drawdown": -0.01, "trades_per_day": 3.0}
         strong_train = {"net_pnl": 4.0, "positive_windows": 3}
         strong_test = {
             "trade_count": 20,
@@ -86,12 +92,18 @@ class OptimizeStrategyTests(unittest.TestCase):
                 "OPT_LONG_ADX_THRESHOLD_VALUES": "25",
                 "OPT_ATR_MAX_PCT_VALUES": "0.0045",
                 "OPT_LONG_ATR_MAX_PCT_VALUES": "0.0035",
-                "OPT_VOLUME_MIN_MULTIPLIER_VALUES": "1.0",
-                "OPT_LONG_VOLUME_MIN_MULTIPLIER_VALUES": "1.1",
-                "OPT_SHORT_VOLUME_MIN_MULTIPLIER_VALUES": "1.0",
+                "OPT_MIN_VOLUME_RATIO_VALUES": "1.1",
                 "OPT_TRAIL_ATR_MULTIPLIER_VALUES": "1.5",
+                "OPT_TRAIL_AFTER_ATR_MULTIPLE_VALUES": "1.5",
                 "OPT_MAX_BARS_IN_TRADE_VALUES": "12",
-                "OPT_REVERSAL_SIGNAL_STRENGTH_VALUES": "35",
+                "OPT_MAX_TRADES_PER_DAY_VALUES": "4",
+                "OPT_COOLDOWN_BARS_VALUES": "6",
+                "OPT_REGIME_ADX_MIN_VALUES": "18",
+                "OPT_REGIME_MIN_SLOPE_PCT_VALUES": "0.002",
+                "OPT_PULLBACK_MIN_DEPTH_ATR_VALUES": "0.4",
+                "OPT_PULLBACK_MAX_DEPTH_ATR_VALUES": "1.2",
+                "OPT_REACCEL_MIN_BAR_BODY_ATR_VALUES": "0.2",
+                "OPT_SPIKE_BAR_MAX_RANGE_ATR_VALUES": "1.8",
                 "OPT_ENTRY_WINDOWS_VALUES": "0940-1130,0940-1130,1400-1545",
             },
             clear=False,

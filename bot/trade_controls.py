@@ -22,6 +22,9 @@ class ReplayState:
     last_entry_signal_strength: float | None = None
     last_entry_signal_side: str | None = None
     trading_day: str | None = None
+    entry_failures_today: int = 0
+    entry_failures_day_utc: str | None = None
+    last_exit_was_loss: bool = False
 
 
 @dataclass
@@ -92,12 +95,22 @@ def should_allow_reentry_during_cooldown(
     return current_strength >= (state.last_entry_signal_strength + min_signal_strength_delta)
 
 
+def trading_day_utc(ts: datetime | None = None) -> str:
+    current = ts.astimezone(timezone.utc) if ts is not None else datetime.now(timezone.utc)
+    return current.date().isoformat()
+
+
 def sync_replay_day(state: ReplayState, ts, equity: float) -> None:
     current_day = trading_day_et(ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts)
     if state.trading_day != current_day:
         state.trading_day = current_day
         state.trades_today = 0
         state.daily_start_equity = equity
+
+    current_day_utc = trading_day_utc(ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts)
+    if state.entry_failures_day_utc != current_day_utc:
+        state.entry_failures_day_utc = current_day_utc
+        state.entry_failures_today = 0
 
 
 def evaluate_replay_entry(
@@ -113,6 +126,7 @@ def evaluate_replay_entry(
     risk_config: RiskConfig,
     require_signal_strength_improvement: bool,
     min_signal_strength_delta: float,
+    max_consecutive_entry_failures_per_day: int = 0,
 ) -> list[str]:
     sync_replay_day(state, ts, equity)
     reasons: list[str] = []
@@ -142,6 +156,9 @@ def evaluate_replay_entry(
         else:
             reasons.append("cooldown")
 
+    if max_consecutive_entry_failures_per_day > 0 and state.entry_failures_today >= max_consecutive_entry_failures_per_day:
+        reasons.append("max_entry_failures_hit")
+
     return reasons
 
 
@@ -152,12 +169,20 @@ def record_replay_entry(state: ReplayState, ts, signal: str, signal_strength: fl
     state.last_entry_signal_side = "long" if signal == "LONG" else "short" if signal == "SHORT" else None
 
 
-def record_replay_exit(state: ReplayState, ts, pnl: float) -> None:
+def record_replay_exit(state: ReplayState, ts, pnl: float, count_as_entry_failure: bool = False) -> None:
     state.last_trade_ts = ts.isoformat()
     if pnl > 0:
         state.consecutive_losses = 0
+        state.last_exit_was_loss = False
     else:
         state.consecutive_losses += 1
+        state.last_exit_was_loss = True
+        if count_as_entry_failure:
+            current_day_utc = trading_day_utc(ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts)
+            if state.entry_failures_day_utc != current_day_utc:
+                state.entry_failures_day_utc = current_day_utc
+                state.entry_failures_today = 0
+            state.entry_failures_today += 1
 
 
 def evaluate_session_exit(

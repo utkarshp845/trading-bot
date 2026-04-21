@@ -30,6 +30,7 @@ from bot.store import (
     get_position_state,
     get_state,
     has_pending_orders,
+    increment_entry_failures_today,
     increment_trades_today,
     init_db,
     mark_order_processed,
@@ -43,7 +44,7 @@ from bot.store import (
     upsert_position_state,
     update_order_status,
 )
-from bot.strategy_ma import build_strategy_config_from_env, compute_indicators, generate_signal
+from bot.strategy_ma import build_strategy_config_from_env, compute_indicators, generate_signal, required_history_bars
 from bot.trade_controls import bars_since, compute_entry_qty, should_allow_reentry_during_cooldown
 from bot.trade_controls import evaluate_session_exit
 
@@ -118,6 +119,14 @@ def _entry_metrics_payload(signal: str, metrics: dict) -> dict:
         "volume_ratio": metrics.get("volume_ratio"),
         "sma_spread_pct": metrics.get("sma_spread_pct"),
         "entry_window_bucket": metrics.get("entry_window_bucket"),
+        "regime_on": metrics.get("regime_on"),
+        "regime_side": metrics.get("regime_side"),
+        "regime_slope_pct": metrics.get("regime_slope_pct"),
+        "regime_adx": metrics.get("regime_adx"),
+        "regime_atr_pct": metrics.get("regime_atr_pct"),
+        "pullback_depth_atr": metrics.get("pullback_depth_atr"),
+        "pullback_depth_bucket": metrics.get("pullback_depth_bucket"),
+        "spike_bar": metrics.get("spike_bar"),
         "signal_strength": metrics.get("signal_strength"),
         "decision_price": metrics.get("price"),
     }
@@ -354,6 +363,8 @@ def reconcile_submitted_orders(conn, trading, symbol: str, logger) -> None:
                         set_consecutive_losses(conn, 0)
                     else:
                         set_consecutive_losses(conn, state_after_trade.consecutive_losses + 1)
+                        if position_before.side == "long":
+                            increment_entry_failures_today(conn)
 
             sync_position_state_with_broker(conn, trading, symbol, logger)
             set_last_trade(conn, fill_ts)
@@ -413,10 +424,10 @@ def main():
     max_position_notional_pct = float(os.getenv("MAX_POSITION_NOTIONAL_PCT", "0.02"))
     startup_delay_seconds = max(0, int(os.getenv("STARTUP_DELAY_SECONDS", "20")))
     sizing_mode = os.getenv("POSITION_SIZING_MODE", "fixed").strip().lower() or "fixed"
-    reversal_signal_strength_min = float(os.getenv("REVERSAL_SIGNAL_STRENGTH_MIN", "0"))
     allow_overnight_holding = _env_flag("ALLOW_OVERNIGHT_HOLDING", False)
     flatten_before_close_minutes = max(0, int(os.getenv("FLATTEN_BEFORE_CLOSE_MINUTES", "5")))
     is_crypto = _env_flag("IS_CRYPTO", False)
+    max_consecutive_entry_failures_per_day = max(0, int(os.getenv("MAX_CONSECUTIVE_ENTRY_FAILURES_PER_DAY", "0")))
 
     ts = utc_iso_now()
     logger.info(
@@ -504,14 +515,15 @@ def main():
         logger.info("Run complete.")
         return
 
-    bars = get_recent_bars(data, symbol, timeframe_minutes, limit=220)
+    cfg = build_strategy_config_from_env(timeframe_minutes)
+    bars = get_recent_bars(data, symbol, timeframe_minutes, limit=max(220, required_history_bars(cfg) + 10))
     if bars.empty:
         pending_orders = has_pending_orders(conn, symbol)
         if session_exit.should_exit and not pending_orders and pos_qty != 0:
             forced_action = "SELL" if pos_qty > 0 else "BUY"
             forced_intent = "exit"
             forced_note = session_exit.reason
-            executed_qty = int(abs(float(pos_qty)))
+            executed_qty = abs(float(pos_qty)) if is_crypto else int(abs(float(pos_qty)))
             order_info = place_market_order(trading, symbol, forced_action.lower(), executed_qty)
             status = normalize_order_status(getattr(order_info, "status", None))
             filled_avg = _safe_float(getattr(order_info, "filled_avg_price", None))
@@ -575,8 +587,6 @@ def main():
     logger.info(
         f"bars_loaded count={len(bars)} first_bar_ts={bars.index[0].isoformat()} last_bar_ts={bars.index[-1].isoformat()}"
     )
-
-    cfg = build_strategy_config_from_env(timeframe_minutes)
 
     bars2 = compute_indicators(bars, cfg)
     signal, metrics, reasons = generate_signal(bars2, cfg)
@@ -655,9 +665,11 @@ def main():
         if signal == "LONG":
             desired_action = "BUY"
             intent = "entry"
-        elif signal == "SHORT":
+        elif signal == "SHORT" and cfg.allow_shorts:
             desired_action = "SELL"
             intent = "entry"
+        elif signal == "SHORT" and not cfg.allow_shorts:
+            note_parts.append("short_signal_diagnostic_only")
     elif pos_qty > 0:
         exit_reason = None
         trail_atr_multiplier = cfg.trail_atr_multiplier_for("long")
@@ -674,16 +686,34 @@ def main():
             desired_action = "SELL"
             exit_reason = f"long_hard_stop_hit({last_price}<{float(pos_state.entry_price) - hard_stop_atr_mult * float(v_atr):.4f})"
 
-        if desired_action == "HOLD" and last_price is not None and v_atr is not None and pos_state.highest_price is not None:
-            trailing_stop = float(pos_state.highest_price) - (trail_atr_multiplier * float(v_atr))
-            if cfg.enable_breakeven_stop and pos_state.entry_price is not None and float(last_price) >= (
+        if desired_action == "HOLD" and cfg.exit_on_regime_invalidation and metrics.get("regime_on") is False:
+            desired_action = "SELL"
+            exit_reason = "long_regime_invalidated"
+
+        if desired_action == "HOLD" and last_price is not None and v_atr is not None and pos_state.entry_price is not None:
+            protective_stop = None
+            if cfg.enable_breakeven_stop and pos_state.highest_price is not None and float(pos_state.highest_price) >= (
                 float(pos_state.entry_price) + (cfg.breakeven_after_atr_multiple * float(v_atr))
             ):
-                trailing_stop = max(trailing_stop, float(pos_state.entry_price))
-            if cfg.enable_profit_lock and pos_state.entry_price is not None and float(last_price) >= (
+                protective_stop = float(pos_state.entry_price)
+            if cfg.enable_profit_lock and pos_state.highest_price is not None and float(pos_state.highest_price) >= (
                 float(pos_state.entry_price) + (cfg.profit_lock_after_atr_multiple * float(v_atr))
             ):
-                trailing_stop = max(trailing_stop, float(pos_state.entry_price) + (cfg.profit_lock_atr_multiple * float(v_atr)))
+                profit_lock_stop = float(pos_state.entry_price) + (cfg.profit_lock_atr_multiple * float(v_atr))
+                protective_stop = max(protective_stop or profit_lock_stop, profit_lock_stop)
+            if protective_stop is not None and float(last_price) < protective_stop:
+                desired_action = "SELL"
+                exit_reason = f"long_protective_stop_hit({last_price}<{protective_stop})"
+
+        if (
+            desired_action == "HOLD"
+            and last_price is not None
+            and v_atr is not None
+            and pos_state.highest_price is not None
+            and pos_state.entry_price is not None
+            and float(pos_state.highest_price) >= (float(pos_state.entry_price) + (cfg.trail_after_atr_multiple * float(v_atr)))
+        ):
+            trailing_stop = float(pos_state.highest_price) - (trail_atr_multiplier * float(v_atr))
             if float(last_price) < trailing_stop:
                 desired_action = "SELL"
                 exit_reason = f"long_trailing_stop_hit({last_price}<{trailing_stop})"
@@ -699,10 +729,6 @@ def main():
             ):
                 desired_action = "SELL"
                 exit_reason = f"long_time_stop_hit({trade_bars}>={max_bars_in_trade})"
-
-        if desired_action == "HOLD" and signal == "SHORT" and float(signal_strength or 0.0) >= reversal_signal_strength_min:
-            desired_action = "SELL"
-            exit_reason = "long_trend_reversal"
 
         if exit_reason:
             note_parts.append(exit_reason)
@@ -723,16 +749,34 @@ def main():
             desired_action = "BUY"
             exit_reason = f"short_hard_stop_hit({last_price}>{float(pos_state.entry_price) + hard_stop_atr_mult * float(v_atr):.4f})"
 
-        if desired_action == "HOLD" and last_price is not None and v_atr is not None and pos_state.lowest_price is not None:
-            trailing_stop = float(pos_state.lowest_price) + (trail_atr_multiplier * float(v_atr))
-            if cfg.enable_breakeven_stop and pos_state.entry_price is not None and float(last_price) <= (
+        if desired_action == "HOLD" and cfg.exit_on_regime_invalidation and metrics.get("regime_bearish") is False:
+            desired_action = "BUY"
+            exit_reason = "short_regime_invalidated"
+
+        if desired_action == "HOLD" and last_price is not None and v_atr is not None and pos_state.entry_price is not None:
+            protective_stop = None
+            if cfg.enable_breakeven_stop and pos_state.lowest_price is not None and float(pos_state.lowest_price) <= (
                 float(pos_state.entry_price) - (cfg.breakeven_after_atr_multiple * float(v_atr))
             ):
-                trailing_stop = min(trailing_stop, float(pos_state.entry_price))
-            if cfg.enable_profit_lock and pos_state.entry_price is not None and float(last_price) <= (
+                protective_stop = float(pos_state.entry_price)
+            if cfg.enable_profit_lock and pos_state.lowest_price is not None and float(pos_state.lowest_price) <= (
                 float(pos_state.entry_price) - (cfg.profit_lock_after_atr_multiple * float(v_atr))
             ):
-                trailing_stop = min(trailing_stop, float(pos_state.entry_price) - (cfg.profit_lock_atr_multiple * float(v_atr)))
+                profit_lock_stop = float(pos_state.entry_price) - (cfg.profit_lock_atr_multiple * float(v_atr))
+                protective_stop = min(protective_stop or profit_lock_stop, profit_lock_stop)
+            if protective_stop is not None and float(last_price) > protective_stop:
+                desired_action = "BUY"
+                exit_reason = f"short_protective_stop_hit({last_price}>{protective_stop})"
+
+        if (
+            desired_action == "HOLD"
+            and last_price is not None
+            and v_atr is not None
+            and pos_state.lowest_price is not None
+            and pos_state.entry_price is not None
+            and float(pos_state.lowest_price) <= (float(pos_state.entry_price) - (cfg.trail_after_atr_multiple * float(v_atr)))
+        ):
+            trailing_stop = float(pos_state.lowest_price) + (trail_atr_multiplier * float(v_atr))
             if float(last_price) > trailing_stop:
                 desired_action = "BUY"
                 exit_reason = f"short_trailing_stop_hit({last_price}>{trailing_stop})"
@@ -748,10 +792,6 @@ def main():
             ):
                 desired_action = "BUY"
                 exit_reason = f"short_time_stop_hit({trade_bars}>={max_bars_in_trade})"
-
-        if desired_action == "HOLD" and signal == "LONG" and float(signal_strength or 0.0) >= reversal_signal_strength_min:
-            desired_action = "BUY"
-            exit_reason = "short_trend_reversal"
 
         if exit_reason:
             note_parts.append(exit_reason)
@@ -776,7 +816,7 @@ def main():
     order_qty = qty
 
     entering_long = pos_qty == 0 and desired_action == "BUY" and signal == "LONG"
-    entering_short = pos_qty == 0 and desired_action == "SELL" and signal == "SHORT"
+    entering_short = pos_qty == 0 and desired_action == "SELL" and signal == "SHORT" and cfg.allow_shorts
     if entering_long or entering_short:
         order_qty = compute_entry_qty(
             sizing_mode,
@@ -831,6 +871,23 @@ def main():
                 },
             )
 
+        if max_consecutive_entry_failures_per_day > 0 and state.entry_failures_today >= max_consecutive_entry_failures_per_day:
+            action = "HOLD"
+            note_parts.append("max_entry_failures_hit")
+            emit_event(
+                conn,
+                ts,
+                "WARN",
+                "entry_blocked_weak_tape",
+                symbol,
+                "Entry blocked after too many failed entries for the current UTC day.",
+                {
+                    "entry_failures_today": state.entry_failures_today,
+                    "entry_failures_day_utc": state.entry_failures_day_utc,
+                    "max_consecutive_entry_failures_per_day": max_consecutive_entry_failures_per_day,
+                },
+            )
+
         if order_qty <= 0:
             action = "HOLD"
             note_parts.append("position_sizing_blocked")
@@ -881,7 +938,7 @@ def main():
         f"adx={v_adx} atr={v_atr} atr_pct={v_atr_pct} volume={v_volume} volume_ma={v_volume_ma} "
         f"signal={signal} signal_strength={signal_strength} pos_qty={pos_qty} desired_action={desired_action} "
         f"action={action} action_type={action_type} trades_today={state.trades_today} "
-        f"consecutive_losses={state.consecutive_losses} note={note}"
+        f"consecutive_losses={state.consecutive_losses} entry_failures_today={state.entry_failures_today} note={note}"
     )
 
     order_info = None
@@ -911,7 +968,7 @@ def main():
                 executed_qty = sell_qty
                 order_side_for_log = "sell"
                 order_intent = "exit"
-        elif pos_qty == 0 and order_qty > 0:
+        elif pos_qty == 0 and order_qty > 0 and cfg.allow_shorts:
             order_info = place_market_order(trading, symbol, "sell", order_qty)
             executed_qty = order_qty
             order_side_for_log = "sell"
