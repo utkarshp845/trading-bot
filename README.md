@@ -57,23 +57,18 @@ Load a profile by setting `BOT_PROFILE` or by sourcing the file before running.
 
 ## Run
 
-Run one bot cycle:
+```bash
+# Paper trade (BTC config, Alpaca paper account)
+docker compose run --rm paper
 
-```powershell
-docker compose run --rm bot
-```
+# Live trade (BTC config, Alpaca live account)
+docker compose run --rm trade
 
-Profile-specific runners:
+# Generate monitor report
+docker compose run --rm monitor
 
-```powershell
-docker compose run --rm paper-spy
-docker compose run --rm live-spy
-```
-
-Paper research (small-account ~$250 starting equity):
-
-```powershell
-docker compose run --rm paper-research
+# Validate the full build and runtime setup
+docker compose run --rm validate
 ```
 
 ## Validate

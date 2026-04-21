@@ -1,13 +1,26 @@
+x-btc: &btc
+  build: .
+  env_file:
+    - .env
+    - config/live_btc.env
+  volumes:
+    - ./runtime:/app/runtime
+
 services:
-  bot:
-    build: .
-    env_file:
-      - .env
-    volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
-      - ./reports:/app/reports
-    command: ["python", "-m", "bot.main"]
+  trade:
+    <<: *btc
+    command: ["python", "-m", "bot.profile_runner", "live", "trade"]
+
+  paper:
+    <<: *btc
+    environment:
+      - ALPACA_PAPER=true
+    command: ["python", "-m", "bot.profile_runner", "live", "trade"]
+
+  monitor:
+    <<: *btc
+    command: ["python", "-m", "bot.profile_runner", "live", "monitor"]
+
   validate:
     build: .
     env_file:
@@ -17,110 +30,3 @@ services:
       - ./logs:/app/logs
       - ./reports:/app/reports
     command: ["python", "-m", "bot.validate_runtime"]
-  monitor:
-    build: .
-    env_file:
-      - .env
-    volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
-      - ./reports:/app/reports
-    command: ["python", "-m", "bot.report_monitor"]
-  research:
-    build: .
-    env_file:
-      - .env
-    volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
-      - ./reports:/app/reports
-    command: ["python", "-m", "bot.research"]
-  optimize:
-    build: .
-    env_file:
-      - .env
-    volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
-      - ./reports:/app/reports
-    command: ["python", "-m", "bot.optimize_strategy"]
-  paper-spy:
-    build: .
-    env_file:
-      - .env
-      - config/paper_spy.env
-    volumes:
-      - ./runtime:/app/runtime
-    command: ["python", "-m", "bot.profile_runner", "paper", "trade"]
-  paper-monitor:
-    build: .
-    env_file:
-      - .env
-      - config/paper_spy.env
-    volumes:
-      - ./runtime:/app/runtime
-    command: ["python", "-m", "bot.profile_runner", "paper", "monitor"]
-  paper-research:
-    build: .
-    env_file:
-      - .env
-      - config/paper_spy.env
-    volumes:
-      - ./runtime:/app/runtime
-    command: ["python", "-m", "bot.profile_runner", "paper", "research"]
-  paper-validate:
-    build: .
-    env_file:
-      - .env
-      - config/paper_spy.env
-    volumes:
-      - ./runtime:/app/runtime
-    command: ["python", "-m", "bot.profile_runner", "paper", "validate"]
-  live-spy:
-    build: .
-    env_file:
-      - .env
-      - config/live_spy.env
-    volumes:
-      - ./runtime:/app/runtime
-    command: ["python", "-m", "bot.profile_runner", "live", "trade"]
-  live-monitor:
-    build: .
-    env_file:
-      - .env
-      - config/live_spy.env
-    volumes:
-      - ./runtime:/app/runtime
-    command: ["python", "-m", "bot.profile_runner", "live", "monitor"]
-  live-validate:
-    build: .
-    env_file:
-      - .env
-      - config/live_spy.env
-    volumes:
-      - ./runtime:/app/runtime
-    command: ["python", "-m", "bot.profile_runner", "live", "validate"]
-  live-btc:
-    build: .
-    env_file:
-      - .env
-      - config/live_btc.env
-    volumes:
-      - ./runtime:/app/runtime
-    command: ["python", "-m", "bot.profile_runner", "live", "trade"]
-  live-btc-monitor:
-    build: .
-    env_file:
-      - .env
-      - config/live_btc.env
-    volumes:
-      - ./runtime:/app/runtime
-    command: ["python", "-m", "bot.profile_runner", "live", "monitor"]
-  live-btc-validate:
-    build: .
-    env_file:
-      - .env
-      - config/live_btc.env
-    volumes:
-      - ./runtime:/app/runtime
-    command: ["python", "-m", "bot.profile_runner", "live", "validate"]
