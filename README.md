@@ -1,12 +1,13 @@
 # Trading Bot
 
-Simple intraday trading bot for Alpaca paper trading, with explicit SPY paper and live runners.
+Trend-following trading bot for Alpaca, supporting both intraday equities (SPY) and 24/7 crypto (BTC/USD). Uses an SMA crossover strategy with ADX, ATR, and volume filters, layered risk controls, and multiple exit mechanisms.
 
 It currently:
 
-- pulls recent stock bars from Alpaca
+- pulls bars from Alpaca for stocks (IEX feed) or crypto (CryptoHistoricalDataClient)
 - generates trend-following signals on a configurable timeframe
-- applies basic risk checks before entering trades
+- applies layered risk checks before entering trades (daily drawdown, consecutive losses, cooldown, hard stop)
+- manages exits via trailing stop, hard stop, breakeven stop, profit lock, time stop, and trend reversal
 - records runs, orders, events, and closed trades in SQLite
 - writes daily and monitoring reports to `reports/`
 
@@ -20,20 +21,39 @@ It currently:
 ## Setup
 
 1. Copy `.env.example` to `.env`
-2. Add your Alpaca paper keys and, when ready, your live keys
-3. Adjust any strategy or risk settings you want
+2. Add your Alpaca keys (paper or live)
+3. Choose a profile config from `config/` or adjust settings directly in `.env`
 
-Important env values:
+Key env values:
 
-- `ALPACA_PAPER_API_KEY`
-- `ALPACA_PAPER_SECRET_KEY`
-- `ALPACA_LIVE_API_KEY`
-- `ALPACA_LIVE_SECRET_KEY`
-- `SYMBOL=SPY`
-- `TIMEFRAME_MINUTES=5`
-- `QTY=1`
-- `ALLOW_OVERNIGHT_HOLDING=false`
-- `FLATTEN_BEFORE_CLOSE_MINUTES=5`
+| Variable | Default | Description |
+|---|---|---|
+| `ALPACA_API_KEY` | — | Alpaca API key |
+| `ALPACA_SECRET_KEY` | — | Alpaca secret key |
+| `ALPACA_PAPER` | `true` | Set `false` for live trading |
+| `SYMBOL` | `SPY` | Any equity or `BTC/USD` for crypto |
+| `IS_CRYPTO` | `false` | Set `true` to enable crypto mode (24/7 market, fractional qty, GTC orders) |
+| `TIMEFRAME_MINUTES` | `5` | Bar timeframe in minutes |
+| `POSITION_SIZING_MODE` | `fixed` | `fixed`, `notional_cap`, or `atr_risk` |
+| `HARD_STOP_ATR_MULT` | `0` | Hard stop distance in ATR units from entry (0 = disabled) |
+| `ENABLE_BREAKEVEN_STOP` | `false` | Move stop to breakeven after N ATR of profit |
+| `ENABLE_PROFIT_LOCK` | `false` | Lock in partial profit after N ATR move |
+| `MAX_DAILY_DRAWDOWN_PCT` | `0.01` | Halt entries after this % daily loss |
+| `MAX_DAILY_LOSS` | `0` | Dollar daily loss cap (0 = disabled) |
+| `ALLOW_OVERNIGHT_HOLDING` | `false` | Keep positions overnight (set `true` for crypto) |
+| `FLATTEN_BEFORE_CLOSE_MINUTES` | `5` | Force flat this many minutes before 4 PM ET (set `0` for crypto) |
+
+## Profiles
+
+Pre-built configs live in `config/`:
+
+| File | Symbol | Use |
+|---|---|---|
+| `config/paper_spy.env` | SPY | Paper trading equities |
+| `config/live_spy.env` | SPY | Live trading equities |
+| `config/live_btc.env` | BTC/USD | Live trading Bitcoin (24/7, fractional) |
+
+Load a profile by setting `BOT_PROFILE` or by sourcing the file before running.
 
 ## Run
 
@@ -43,14 +63,14 @@ Run one bot cycle:
 docker compose run --rm bot
 ```
 
-Profile-specific SPY runners:
+Profile-specific runners:
 
 ```powershell
 docker compose run --rm paper-spy
 docker compose run --rm live-spy
 ```
 
-Paper research now uses a small-account starting equity of about `$250` through the paper SPY profile:
+Paper research (small-account ~$250 starting equity):
 
 ```powershell
 docker compose run --rm paper-research
@@ -197,15 +217,47 @@ Push to the `main` branch to trigger automatic deployment via GitHub Actions.
 - `logs/` - runtime logs and CSV snapshots
 - `reports/` - generated reports
 
+## Risk Controls
+
+The bot has multiple independent safety layers:
+
+| Control | Config Key | Default |
+|---|---|---|
+| Hard stop loss | `HARD_STOP_ATR_MULT` | disabled |
+| Trailing stop | `TRAIL_ATR_MULTIPLIER` | 1.5x ATR |
+| Breakeven stop | `ENABLE_BREAKEVEN_STOP` | false |
+| Profit lock | `ENABLE_PROFIT_LOCK` | false |
+| Time-based stop | `MAX_BARS_IN_TRADE` | 12 bars |
+| Trend reversal exit | `REVERSAL_SIGNAL_STRENGTH_MIN` | 35 |
+| Daily drawdown halt | `MAX_DAILY_DRAWDOWN_PCT` | 1% |
+| Dollar loss cap | `MAX_DAILY_LOSS` | disabled |
+| Consecutive loss halt | `MAX_CONSECUTIVE_LOSSES` | 3 |
+| Max trades per day | `MAX_TRADES_PER_DAY` | 5 |
+| Entry cooldown | `COOLDOWN_BARS` | 2 bars |
+| Stale data check | `ENABLE_STALE_BAR_CHECK` | false |
+
+## Crypto (BTC/USD)
+
+Set `IS_CRYPTO=true` (or use `config/live_btc.env`) to enable crypto mode:
+
+- Uses `CryptoHistoricalDataClient` for bar data (no IEX feed requirement)
+- Bypasses NYSE market-hours check — trades 24/7
+- Orders use `TimeInForce.GTC` instead of `DAY`
+- Position sizing returns fractional quantities (e.g. `0.0005 BTC`)
+- Cron schedule should run every 5 minutes around the clock
+
+For BTC with a small account, recommended settings (already in `config/live_btc.env`):
+- `POSITION_SIZING_MODE=atr_risk` with `ATR_RISK_PER_TRADE_PCT=0.0025`
+- `HARD_STOP_ATR_MULT=3.0`
+- `TRAIL_ATR_MULTIPLIER=2.0` (BTC needs more room than equities)
+- `MAX_DAILY_LOSS=10` (hard dollar cap)
+
 ## Notes
 
-- This repo is set up for paper trading, not production deployment.
-- Keep real API keys only in your local `.env`.
-- By default, the bot will hold if Alpaca market clock data is unavailable.
-- By default, the bot behaves as an intraday system: it will flatten inherited overnight positions on the next market session and try to flatten open positions shortly before the close.
+- Keep real API keys only in your local `.env` — never commit them.
+- By default, the bot behaves as an intraday system: it flattens inherited overnight positions on the next session and exits before market close. Set `ALLOW_OVERNIGHT_HOLDING=true` and `FLATTEN_BEFORE_CLOSE_MINUTES=0` for crypto.
 - The `paper-spy` and `live-spy` runners write to separate runtime directories under `runtime/paper` and `runtime/live`.
-- The paper SPY profile is configured to replay from roughly `$250` starting equity so the research output is closer to a small-account test.
-- Use the optimizer to rank parameter sets on walk-forward windows before copying new values into `.env`.
-- `OPERATIONS.md` has a few extra day-to-day commands.
-- `docs/github_actions_ec2.md` walks through the GitHub Actions based EC2 deployment path.
-- Run `scripts/validate.ps1` for the full local validation pass on Windows, or `scripts/validate.sh` on Unix-like shells.
+- Use the optimizer to rank parameter sets on walk-forward windows before going live.
+- `OPERATIONS.md` has day-to-day commands.
+- `docs/github_actions_ec2.md` covers the GitHub Actions EC2 deployment path.
+- Run `scripts/validate.ps1` (Windows) or `scripts/validate.sh` (Unix) for a full local validation pass.
