@@ -100,3 +100,27 @@ services:
     volumes:
       - ./runtime:/app/runtime
     command: ["python", "-m", "bot.profile_runner", "live", "validate"]
+  live-btc:
+    build: .
+    env_file:
+      - .env
+      - config/live_btc.env
+    volumes:
+      - ./runtime:/app/runtime
+    command: ["python", "-m", "bot.profile_runner", "live", "trade"]
+  live-btc-monitor:
+    build: .
+    env_file:
+      - .env
+      - config/live_btc.env
+    volumes:
+      - ./runtime:/app/runtime
+    command: ["python", "-m", "bot.profile_runner", "live", "monitor"]
+  live-btc-validate:
+    build: .
+    env_file:
+      - .env
+      - config/live_btc.env
+    volumes:
+      - ./runtime:/app/runtime
+    command: ["python", "-m", "bot.profile_runner", "live", "validate"]
