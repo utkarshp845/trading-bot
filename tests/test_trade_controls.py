@@ -5,7 +5,7 @@ import unittest
 import pandas as pd
 
 from bot.risk import RiskConfig
-from bot.trade_controls import ReplayState, evaluate_replay_entry, evaluate_session_exit, sync_replay_day
+from bot.trade_controls import ReplayState, compute_entry_qty, evaluate_replay_entry, evaluate_session_exit, sync_replay_day
 
 
 UTC = ZoneInfo("UTC")
@@ -152,6 +152,65 @@ class TradeControlsTests(unittest.TestCase):
         )
         self.assertTrue(decision.should_exit)
         self.assertEqual(decision.reason, "session_flatten_window(5m_before_close)")
+
+
+    def test_compute_entry_qty_bumps_to_min_notional(self):
+        qty = compute_entry_qty(
+            mode="atr_risk",
+            base_qty=1,
+            equity=100.0,
+            last_price=95000.0,
+            atr_value=500.0,
+            max_position_notional_pct=0.50,
+            atr_risk_per_trade_pct=0.0025,
+            fractional=True,
+            min_notional=1.0,
+        )
+        self.assertGreater(qty * 95000.0, 0.99)
+
+    def test_compute_entry_qty_returns_zero_when_min_notional_exceeds_cap(self):
+        qty = compute_entry_qty(
+            mode="atr_risk",
+            base_qty=1,
+            equity=1.0,
+            last_price=95000.0,
+            atr_value=500.0,
+            max_position_notional_pct=0.000005,
+            atr_risk_per_trade_pct=0.02,
+            fractional=True,
+            min_notional=1.0,
+        )
+        self.assertEqual(qty, 0)
+
+    def test_compute_entry_qty_no_min_notional_for_equities(self):
+        qty = compute_entry_qty(
+            mode="atr_risk",
+            base_qty=1,
+            equity=10000.0,
+            last_price=500.0,
+            atr_value=5.0,
+            max_position_notional_pct=0.50,
+            atr_risk_per_trade_pct=0.02,
+            fractional=False,
+            min_notional=0.0,
+        )
+        self.assertGreater(qty, 0)
+
+    def test_compute_entry_qty_atr_risk_capped_by_notional(self):
+        qty = compute_entry_qty(
+            mode="atr_risk",
+            base_qty=1,
+            equity=100.0,
+            last_price=95000.0,
+            atr_value=500.0,
+            max_position_notional_pct=0.50,
+            atr_risk_per_trade_pct=0.02,
+            fractional=True,
+            min_notional=1.0,
+        )
+        notional = qty * 95000.0
+        self.assertLessEqual(notional, 100.0 * 0.50 + 0.01)
+        self.assertGreater(notional, 0.99)
 
 
 if __name__ == "__main__":

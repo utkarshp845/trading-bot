@@ -828,6 +828,7 @@ def main():
             target_position_notional_pct=float(os.getenv("TARGET_POSITION_NOTIONAL_PCT", str(max_position_notional_pct))),
             atr_risk_per_trade_pct=float(os.getenv("ATR_RISK_PER_TRADE_PCT", "0.0025")),
             fractional=is_crypto,
+            min_notional=float(os.getenv("MIN_ORDER_NOTIONAL", "1.0")) if is_crypto else 0.0,
         )
         risk_eval = evaluate_entry_risk(
             RiskConfig(

@@ -52,6 +52,7 @@ def compute_entry_qty(
     target_position_notional_pct: float | None = None,
     atr_risk_per_trade_pct: float = 0.0025,
     fractional: bool = False,
+    min_notional: float = 0.0,
 ) -> float:
     if base_qty <= 0:
         return 0
@@ -66,17 +67,28 @@ def compute_entry_qty(
     capped_qty = round_fn((equity * cap_notional_pct) / last_price) if cap_notional_pct > 0 else base_qty
 
     if mode == "notional_cap":
-        return max(0, capped_qty)
-
-    if mode == "atr_risk":
+        result = max(0, capped_qty)
+    elif mode == "atr_risk":
         if atr_value is None or atr_value <= 0:
             return 0
         atr_qty = round_fn((equity * atr_risk_per_trade_pct) / atr_value)
         if capped_qty > 0:
             atr_qty = min(atr_qty, capped_qty)
-        return max(0, atr_qty)
+        result = max(0, atr_qty)
+    else:
+        result = base_qty
 
-    return base_qty
+    if min_notional > 0 and last_price > 0 and result > 0:
+        notional = result * last_price
+        if notional < min_notional:
+            min_qty = round_fn(min_notional / last_price)
+            if min_qty <= 0:
+                min_qty = round(min_notional / last_price, 8) if fractional else 1
+            if capped_qty > 0 and min_qty > capped_qty:
+                return 0
+            result = min_qty
+
+    return result
 
 
 def should_allow_reentry_during_cooldown(

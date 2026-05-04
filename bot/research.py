@@ -254,6 +254,7 @@ def run_replay(
                 target_position_notional_pct=target_position_notional_pct,
                 atr_risk_per_trade_pct=atr_risk_per_trade_pct,
                 fractional=is_crypto,
+                min_notional=float(os.getenv("MIN_ORDER_NOTIONAL", "1.0")) if is_crypto else 0.0,
             )
             entry_blockers = evaluate_replay_entry(
                 state,
