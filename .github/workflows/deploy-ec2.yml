@@ -67,19 +67,23 @@ jobs:
 
       - name: Prepare SSH
         run: |
-          mkdir -p "$HOME/.ssh"
-          chmod 700 "$HOME/.ssh"
-          cat > "$HOME/.ssh/deploy_key" <<'EOF'
-          ${{ secrets.EC2_SSH_KEY }}
-          EOF
+          set -euo pipefail
+
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "${{ secrets.EC2_SSH_KEY }}" > "$HOME/.ssh/deploy_key"
+          sed -i 's/\r$//' "$HOME/.ssh/deploy_key"
           chmod 600 "$HOME/.ssh/deploy_key"
-          ssh-keyscan -p "$EC2_PORT" -H "$EC2_HOST" >> "$HOME/.ssh/known_hosts"
+          touch "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+          if ! ssh-keyscan -T 30 -p "$EC2_PORT" -H "$EC2_HOST" >> "$HOME/.ssh/known_hosts"; then
+            echo "::error::Could not fetch the SSH host key from $EC2_HOST:$EC2_PORT. Verify EC2_HOST, EC2_PORT, the instance state, and security group ingress from GitHub-hosted runners."
+            exit 1
+          fi
 
       - name: Write runtime env file
         run: |
-          cat > ec2.env <<'EOF'
-          ${{ secrets.EC2_ENV_FILE }}
-          EOF
+          printf '%s\n' "${{ secrets.EC2_ENV_FILE }}" > ec2.env
           chmod 600 ec2.env
 
       - name: Ensure remote app directory exists
