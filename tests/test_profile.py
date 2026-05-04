@@ -71,6 +71,26 @@ class ProfileTests(unittest.TestCase):
             os.environ.clear()
             os.environ.update(original)
 
+    def test_live_btc_profile_uses_small_live_account_risk_limits(self):
+        original = dict(os.environ)
+        try:
+            os.environ.pop("BOT_DATA_DIR", None)
+            os.environ.pop("BOT_LOGS_DIR", None)
+            os.environ.pop("BOT_REPORTS_DIR", None)
+            load_profile("live", "btc")
+            self.assertEqual(os.environ["ALPACA_PAPER"], "false")
+            self.assertEqual(os.environ["SYMBOL"], "BTC/USD")
+            self.assertEqual(os.environ["POSITION_SIZING_MODE"], "atr_risk")
+            self.assertEqual(os.environ["ATR_RISK_PER_TRADE_PCT"], "0.005")
+            self.assertEqual(os.environ["TARGET_POSITION_NOTIONAL_PCT"], "0.20")
+            self.assertEqual(os.environ["MAX_POSITION_NOTIONAL_PCT"], "0.25")
+            self.assertEqual(os.environ["MAX_DAILY_LOSS"], "2")
+            self.assertEqual(os.environ["MAX_CONSECUTIVE_LOSSES"], "1")
+            self.assertEqual(os.environ["MAX_TRADES_PER_DAY"], "2")
+        finally:
+            os.environ.clear()
+            os.environ.update(original)
+
     def test_profile_env_overrides_base_env(self):
         original = dict(os.environ)
         with tempfile.TemporaryDirectory() as tmpdir:

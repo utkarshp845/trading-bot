@@ -64,7 +64,10 @@ def compute_entry_qty(
     cap_notional_pct = target_position_notional_pct if target_position_notional_pct is not None else max_position_notional_pct
     if max_position_notional_pct > 0:
         cap_notional_pct = min(cap_notional_pct, max_position_notional_pct)
-    capped_qty = round_fn((equity * cap_notional_pct) / last_price) if cap_notional_pct > 0 else base_qty
+    has_cap = cap_notional_pct > 0
+    capped_qty = round_fn((equity * cap_notional_pct) / last_price) if has_cap else base_qty
+    if has_cap and capped_qty <= 0:
+        return 0
 
     if mode == "notional_cap":
         result = max(0, capped_qty)
@@ -72,7 +75,7 @@ def compute_entry_qty(
         if atr_value is None or atr_value <= 0:
             return 0
         atr_qty = round_fn((equity * atr_risk_per_trade_pct) / atr_value)
-        if capped_qty > 0:
+        if has_cap:
             atr_qty = min(atr_qty, capped_qty)
         result = max(0, atr_qty)
     else:
@@ -84,7 +87,7 @@ def compute_entry_qty(
             min_qty = round_fn(min_notional / last_price)
             if min_qty <= 0:
                 min_qty = round(min_notional / last_price, 8) if fractional else 1
-            if capped_qty > 0 and min_qty > capped_qty:
+            if has_cap and min_qty > capped_qty:
                 return 0
             result = min_qty
 
