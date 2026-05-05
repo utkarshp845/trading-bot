@@ -61,26 +61,26 @@ def _runtime_root(profile: str, market: str) -> Path:
 
 def _set_runtime_dirs(profile: str, market: str) -> None:
     runtime_root = _runtime_root(profile, market)
-    os.environ.setdefault("BOT_DATA_DIR", str(runtime_root / "data"))
-    os.environ.setdefault("BOT_LOGS_DIR", str(runtime_root / "logs"))
-    os.environ.setdefault("BOT_REPORTS_DIR", str(runtime_root / "reports"))
+    os.environ["BOT_DATA_DIR"] = str(runtime_root / "data")
+    os.environ["BOT_LOGS_DIR"] = str(runtime_root / "logs")
+    os.environ["BOT_REPORTS_DIR"] = str(runtime_root / "reports")
 
 
 def _set_market_defaults(market: str) -> None:
     os.environ["BOT_MARKET"] = market
 
     if market == "spy":
-        os.environ.setdefault("SYMBOL", "SPY")
-        os.environ.setdefault("IS_CRYPTO", "false")
-        os.environ.setdefault("ALLOW_OVERNIGHT_HOLDING", "false")
-        os.environ.setdefault("FLATTEN_BEFORE_CLOSE_MINUTES", "5")
+        os.environ["SYMBOL"] = "SPY"
+        os.environ["IS_CRYPTO"] = "false"
+        os.environ["ALLOW_OVERNIGHT_HOLDING"] = "false"
+        os.environ["FLATTEN_BEFORE_CLOSE_MINUTES"] = "5"
         return
 
     if market == "btc":
-        os.environ.setdefault("SYMBOL", "BTC/USD")
-        os.environ.setdefault("IS_CRYPTO", "true")
-        os.environ.setdefault("ALLOW_OVERNIGHT_HOLDING", "true")
-        os.environ.setdefault("FLATTEN_BEFORE_CLOSE_MINUTES", "0")
+        os.environ["SYMBOL"] = "BTC/USD"
+        os.environ["IS_CRYPTO"] = "true"
+        os.environ["ALLOW_OVERNIGHT_HOLDING"] = "true"
+        os.environ["FLATTEN_BEFORE_CLOSE_MINUTES"] = "0"
         return
 
     raise ValueError(f"Unsupported bot market: {market}")

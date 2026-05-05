@@ -139,6 +139,20 @@ class ProfileTests(unittest.TestCase):
                 os.environ.clear()
                 os.environ.update(original)
 
+    def test_btc_profile_overrides_existing_spy_process_env(self):
+        original = dict(os.environ)
+        try:
+            os.environ["SYMBOL"] = "SPY"
+            os.environ["IS_CRYPTO"] = "false"
+            os.environ["BOT_DATA_DIR"] = "/tmp/trading-bot/live/data"
+            load_profile("live", "btc")
+            self.assertEqual(os.environ["SYMBOL"], "BTC/USD")
+            self.assertEqual(os.environ["IS_CRYPTO"], "true")
+            self.assertIn("live_btc", os.environ["BOT_DATA_DIR"])
+        finally:
+            os.environ.clear()
+            os.environ.update(original)
+
 
 if __name__ == "__main__":
     unittest.main()
