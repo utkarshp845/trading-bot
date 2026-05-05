@@ -37,6 +37,7 @@ jobs:
       EC2_PORT: ${{ vars.EC2_PORT != '' && vars.EC2_PORT || '22' }}
       EC2_APP_DIR: ${{ vars.EC2_APP_DIR != '' && vars.EC2_APP_DIR || '/home/ubuntu/trading-bot' }}
       DEPLOY_PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.profile || 'live' }}
+      DEPLOY_MARKET: btc
       INSTALL_CRON: ${{ github.event_name == 'workflow_dispatch' && inputs.install_cron || 'true' }}
     steps:
       - name: Check out repository
@@ -56,7 +57,7 @@ jobs:
       - name: Validate deploy profile locally
         run: |
           python -m bot.validate_runtime
-          python -m bot.profile_runner "$DEPLOY_PROFILE" validate btc
+          python -m bot.profile_runner "$DEPLOY_PROFILE" validate "$DEPLOY_MARKET"
 
       - name: Validate required secrets
         run: |
@@ -117,5 +118,10 @@ jobs:
       - name: Deploy on EC2
         run: |
           ssh -i "$HOME/.ssh/deploy_key" -p "$EC2_PORT" "$EC2_USER@$EC2_HOST" \
-            "cd '$EC2_APP_DIR' && chmod +x deploy/ec2/deploy_remote.sh deploy/ec2/install_cron.sh && APP_DIR='$EC2_APP_DIR' INSTALL_CRON='$INSTALL_CRON' RUN_AFTER_DEPLOY='0' bash deploy/ec2/deploy_remote.sh '$DEPLOY_PROFILE'"
+            "cd '$EC2_APP_DIR' && chmod +x deploy/ec2/deploy_remote.sh deploy/ec2/install_cron.sh && APP_DIR='$EC2_APP_DIR' DEPLOY_MARKET='$DEPLOY_MARKET' INSTALL_CRON='$INSTALL_CRON' RUN_AFTER_DEPLOY='0' bash deploy/ec2/deploy_remote.sh '$DEPLOY_PROFILE'"
+
+      - name: Verify remote runtime env
+        run: |
+          ssh -i "$HOME/.ssh/deploy_key" -p "$EC2_PORT" "$EC2_USER@$EC2_HOST" \
+            "cd '$EC2_APP_DIR' && test -s .env && DEPLOY_PROFILE='$DEPLOY_PROFILE' DEPLOY_MARKET='$DEPLOY_MARKET' docker compose run --rm --entrypoint python trade -c 'from bot.profile import load_profile; import os; profile = os.environ[\"DEPLOY_PROFILE\"]; market = os.environ[\"DEPLOY_MARKET\"]; load_profile(profile, market); assert os.getenv(\"SYMBOL\") == \"BTC/USD\", os.getenv(\"SYMBOL\"); assert os.getenv(\"IS_CRYPTO\") == \"true\", os.getenv(\"IS_CRYPTO\"); print(\"remote profile ok:\", os.getenv(\"BOT_PROFILE\"), os.getenv(\"BOT_MARKET\"), os.getenv(\"SYMBOL\"))'"
 
