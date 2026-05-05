@@ -12,6 +12,23 @@ DEFAULT_MARKET = "spy"
 SUPPORTED_PROFILES = {"paper", "live"}
 SUPPORTED_MARKETS = {"spy", "btc"}
 
+LIVE_BTC_SAFETY_ENV = {
+    "ALLOW_SHORTS": "false",
+    "POSITION_SIZING_MODE": "atr_risk",
+    "ATR_RISK_PER_TRADE_PCT": "0.005",
+    "MAX_POSITION_NOTIONAL_PCT": "0.25",
+    "TARGET_POSITION_NOTIONAL_PCT": "0.20",
+    "MIN_ORDER_NOTIONAL": "1.0",
+    "HARD_STOP_ATR_MULT": "2.0",
+    "ENABLE_STALE_BAR_CHECK": "true",
+    "MAX_BAR_AGE_SECONDS": "600",
+    "MAX_DAILY_DRAWDOWN_PCT": "0.025",
+    "MAX_DAILY_LOSS": "2",
+    "MAX_CONSECUTIVE_LOSSES": "1",
+    "MAX_TRADES_PER_DAY": "2",
+    "MAX_CONSECUTIVE_ENTRY_FAILURES_PER_DAY": "1",
+}
+
 
 def _load_base_env() -> None:
     default_env = APP_ROOT / ".env"
@@ -101,6 +118,9 @@ def _set_profile_defaults(profile: str, market: str) -> None:
         os.environ.setdefault("STRATEGY_VERSION", f"v2-live-{market}")
     else:
         raise ValueError(f"Unsupported bot profile: {profile}")
+
+    if profile == "live" and market == "btc":
+        os.environ.update(LIVE_BTC_SAFETY_ENV)
 
 
 def load_profile(profile: str, market: str | None = None) -> None:

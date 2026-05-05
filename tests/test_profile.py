@@ -144,14 +144,47 @@ class ProfileTests(unittest.TestCase):
         try:
             os.environ["SYMBOL"] = "SPY"
             os.environ["IS_CRYPTO"] = "false"
+            os.environ["POSITION_SIZING_MODE"] = "fixed"
+            os.environ["ENABLE_STALE_BAR_CHECK"] = "false"
             os.environ["BOT_DATA_DIR"] = "/tmp/trading-bot/live/data"
             load_profile("live", "btc")
             self.assertEqual(os.environ["SYMBOL"], "BTC/USD")
             self.assertEqual(os.environ["IS_CRYPTO"], "true")
+            self.assertEqual(os.environ["POSITION_SIZING_MODE"], "atr_risk")
+            self.assertEqual(os.environ["ENABLE_STALE_BAR_CHECK"], "true")
             self.assertIn("live_btc", os.environ["BOT_DATA_DIR"])
         finally:
             os.environ.clear()
             os.environ.update(original)
+
+    def test_live_btc_safety_defaults_apply_when_profile_env_file_is_missing(self):
+        original = dict(os.environ)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / ".env").write_text(
+                "SYMBOL=SPY\n"
+                "IS_CRYPTO=false\n"
+                "POSITION_SIZING_MODE=fixed\n"
+                "ENABLE_STALE_BAR_CHECK=false\n"
+                "MAX_DAILY_LOSS=100\n",
+                encoding="utf-8",
+            )
+            try:
+                os.environ.pop("SYMBOL", None)
+                os.environ.pop("IS_CRYPTO", None)
+                os.environ.pop("POSITION_SIZING_MODE", None)
+                os.environ.pop("ENABLE_STALE_BAR_CHECK", None)
+                os.environ.pop("MAX_DAILY_LOSS", None)
+                with patch.object(profile_module, "APP_ROOT", root):
+                    load_profile("live", "btc")
+                self.assertEqual(os.environ["SYMBOL"], "BTC/USD")
+                self.assertEqual(os.environ["IS_CRYPTO"], "true")
+                self.assertEqual(os.environ["POSITION_SIZING_MODE"], "atr_risk")
+                self.assertEqual(os.environ["ENABLE_STALE_BAR_CHECK"], "true")
+                self.assertEqual(os.environ["MAX_DAILY_LOSS"], "2")
+            finally:
+                os.environ.clear()
+                os.environ.update(original)
 
 
 if __name__ == "__main__":
