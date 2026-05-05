@@ -36,8 +36,6 @@ jobs:
       EC2_USER: ${{ secrets.EC2_USER }}
       EC2_PORT: ${{ vars.EC2_PORT != '' && vars.EC2_PORT || '22' }}
       EC2_APP_DIR: ${{ vars.EC2_APP_DIR != '' && vars.EC2_APP_DIR || '/home/ubuntu/trading-bot' }}
-      EC2_SECURITY_GROUP_ID: ${{ secrets.EC2_SECURITY_GROUP_ID }}
-      AWS_REGION: ${{ secrets.AWS_REGION }}
       DEPLOY_PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.profile || 'live' }}
       INSTALL_CRON: ${{ github.event_name == 'workflow_dispatch' && inputs.install_cron || 'true' }}
     steps:
@@ -64,48 +62,8 @@ jobs:
         run: |
           test -n "$EC2_HOST"
           test -n "$EC2_USER"
-          test -n "$EC2_SECURITY_GROUP_ID"
-          test -n "$AWS_REGION"
-          test -n "${{ secrets.AWS_ACCESS_KEY_ID }}"
-          test -n "${{ secrets.AWS_SECRET_ACCESS_KEY }}"
           test -n "${{ secrets.EC2_SSH_KEY }}"
           test -n "${{ secrets.EC2_ENV_FILE }}"
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Detect GitHub runner IP
-        id: runner-ip
-        run: |
-          set -euo pipefail
-
-          RUNNER_IP="$(curl -fsSL https://checkip.amazonaws.com | tr -d '[:space:]')"
-          if [[ ! "$RUNNER_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Could not determine GitHub runner public IPv4 address."
-            exit 1
-          fi
-          echo "cidr=$RUNNER_IP/32" >> "$GITHUB_OUTPUT"
-
-      - name: Authorize runner SSH ingress
-        run: |
-          set -euo pipefail
-
-          if aws ec2 authorize-security-group-ingress \
-            --group-id "$EC2_SECURITY_GROUP_ID" \
-            --protocol tcp \
-            --port "$EC2_PORT" \
-            --cidr "${{ steps.runner-ip.outputs.cidr }}" 2> sg-error.txt; then
-            echo "Authorized SSH from GitHub runner ${{ steps.runner-ip.outputs.cidr }}."
-          elif grep -q "InvalidPermission.Duplicate" sg-error.txt; then
-            echo "SSH ingress for GitHub runner ${{ steps.runner-ip.outputs.cidr }} already exists."
-          else
-            cat sg-error.txt
-            exit 1
-          fi
 
       - name: Prepare SSH
         run: |
@@ -160,13 +118,4 @@ jobs:
         run: |
           ssh -i "$HOME/.ssh/deploy_key" -p "$EC2_PORT" "$EC2_USER@$EC2_HOST" \
             "cd '$EC2_APP_DIR' && chmod +x deploy/ec2/deploy_remote.sh deploy/ec2/install_cron.sh && APP_DIR='$EC2_APP_DIR' INSTALL_CRON='$INSTALL_CRON' RUN_AFTER_DEPLOY='0' bash deploy/ec2/deploy_remote.sh '$DEPLOY_PROFILE'"
-
-      - name: Revoke runner SSH ingress
-        if: always() && steps.runner-ip.outputs.cidr != ''
-        run: |
-          aws ec2 revoke-security-group-ingress \
-            --group-id "$EC2_SECURITY_GROUP_ID" \
-            --protocol tcp \
-            --port "$EC2_PORT" \
-            --cidr "${{ steps.runner-ip.outputs.cidr }}" || true
 
