@@ -7,6 +7,7 @@ from unittest.mock import patch
 from bot import paths as paths_module
 from bot import profile as profile_module
 from bot.profile import load_profile
+from bot.validate_profile_env import validate_profile_env
 
 
 class ProfileTests(unittest.TestCase):
@@ -92,6 +93,17 @@ class ProfileTests(unittest.TestCase):
             self.assertEqual(os.environ["MAX_CONSECUTIVE_LOSSES"], "2")
             self.assertEqual(os.environ["MAX_TRADES_PER_DAY"], "3")
             self.assertIn("live_btc", str(paths_module.DATA_DIR))
+        finally:
+            os.environ.clear()
+            os.environ.update(original)
+
+    def test_live_btc_profile_env_contract_matches_config_file(self):
+        original = dict(os.environ)
+        try:
+            resolved = validate_profile_env("live", "btc")
+            self.assertEqual(resolved["SYMBOL"], "BTC/USD")
+            self.assertEqual(resolved["MAX_DAILY_LOSS"], "3")
+            self.assertEqual(resolved["MAX_TRADES_PER_DAY"], "3")
         finally:
             os.environ.clear()
             os.environ.update(original)
