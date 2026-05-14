@@ -212,6 +212,23 @@ class TradeControlsTests(unittest.TestCase):
         self.assertLessEqual(notional, 100.0 * 0.50 + 0.01)
         self.assertGreater(notional, 0.99)
 
+    def test_compute_entry_qty_supports_fractional_equity_small_account(self):
+        qty = compute_entry_qty(
+            mode="atr_risk",
+            base_qty=1,
+            equity=150.0,
+            last_price=600.0,
+            atr_value=5.0,
+            max_position_notional_pct=0.20,
+            target_position_notional_pct=0.15,
+            atr_risk_per_trade_pct=0.005,
+            fractional=True,
+            min_notional=5.0,
+        )
+        notional = qty * 600.0
+        self.assertGreaterEqual(notional, 5.0)
+        self.assertLessEqual(notional, 150.0 * 0.15 + 0.01)
+
 
 if __name__ == "__main__":
     unittest.main()
