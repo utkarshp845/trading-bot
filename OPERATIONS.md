@@ -122,6 +122,7 @@ Profile-specific validation:
 ```powershell
 python -m bot.profile_runner paper validate btc
 python -m bot.profile_runner live validate btc
+python -m bot.profile_runner live validate spy
 ```
 
 Current runtime defaults:
@@ -133,6 +134,7 @@ Current runtime defaults:
 - `paper` and `trade` select separate Alpaca key pairs from `.env` when `ALPACA_PAPER_*` and `ALPACA_LIVE_*` variables are set
 - BTC paper writes runtime artifacts under `runtime/paper_btc`, BTC live under `runtime/live_btc`
 - The BTC paper profile mirrors the live BTC strategy so paper runs are a closer dress rehearsal
+- `config/live_spy.env` enables fractional, long-only SPY sizing for small live accounts; replay it before relying on it live.
 
 ## Notes
 
