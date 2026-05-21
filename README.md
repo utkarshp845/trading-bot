@@ -113,6 +113,8 @@ docker compose run --rm paper-monitor
 docker compose run --rm live-monitor
 ```
 
+The monitor report includes recent rejection counts, near-miss entry bars, and the latest strategy metrics (`regime_side`, `momentum_pct`, `pullback_depth_atr`, `bar_range_atr`, `volume_ratio`, and `signal_strength`) so quiet live periods can be diagnosed from recorded bot state.
+
 Run the research / replay report:
 
 ```powershell
@@ -123,6 +125,12 @@ Run the walk-forward optimizer:
 
 ```powershell
 docker compose run --rm optimize
+```
+
+Direct BTC live tuning equivalent:
+
+```powershell
+python -m bot.profile_runner live optimize btc
 ```
 
 The optimizer now logs progress while it runs. For a quick smoke test, cap the search first:
@@ -141,6 +149,8 @@ Main outputs:
 - `reports/research_latest.json`
 - `reports/optimize_latest.md`
 - `reports/optimize_latest.json`
+
+For BTC live tuning, the optimizer compares candidates against the loaded live baseline over the same bars. A candidate is marked accepted only if it clears the full replay, walk-forward, baseline-improvement, and 2x-slippage checks in the report.
 
 ## Deployment
 
@@ -253,10 +263,12 @@ Set `IS_CRYPTO=true` (or use `config/paper_btc.env` / `config/live_btc.env`) to 
 - Cron schedule should run every 5 minutes around the clock
 
 For BTC with a small account, recommended settings (already in `config/paper_btc.env` and `config/live_btc.env`):
-- `POSITION_SIZING_MODE=atr_risk` with explicit notional caps
+- `POSITION_SIZING_MODE=atr_risk`
+- Live BTC: `ATR_RISK_PER_TRADE_PCT=0.0075`, `MAX_POSITION_NOTIONAL_PCT=0.35`, `TARGET_POSITION_NOTIONAL_PCT=0.30`, `MAX_TRADES_PER_DAY=3`
+- Paper BTC: larger rehearsal sizing in `config/paper_btc.env`
 - `HARD_STOP_ATR_MULT=2.0`
 - `TRAIL_ATR_MULTIPLIER=2.0` (BTC needs more room than equities)
-- `MAX_DAILY_LOSS=3` for the live small-account profile
+- `MAX_DAILY_LOSS=3` for the live BTC profile
 - `TREND_EMA_PERIOD=55` with minimum EMA-distance confirmation to filter weak mean-reversion noise
 - `MOMENTUM_LOOKBACK_BARS=3` to prefer continuation entries over flat crossovers
 

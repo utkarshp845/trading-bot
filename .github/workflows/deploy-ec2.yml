@@ -124,4 +124,3 @@ jobs:
         run: |
           ssh -i "$HOME/.ssh/deploy_key" -p "$EC2_PORT" "$EC2_USER@$EC2_HOST" \
             "cd '$EC2_APP_DIR' && test -s .env && docker compose run --rm --entrypoint python -e DEPLOY_PROFILE='$DEPLOY_PROFILE' -e DEPLOY_MARKET='$DEPLOY_MARKET' trade -m bot.validate_profile_env"
-
