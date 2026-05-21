@@ -35,6 +35,8 @@ Key env values:
 | `IS_CRYPTO` | `false` | Set `true` to enable crypto mode (24/7 market, fractional qty, GTC orders) |
 | `TIMEFRAME_MINUTES` | `5` | Bar timeframe in minutes |
 | `POSITION_SIZING_MODE` | `fixed` | `fixed`, `notional_cap`, or `atr_risk` |
+| `ALLOW_FRACTIONAL_EQUITIES` | `false` | Allow fractional equity quantities for small live stock accounts |
+| `MIN_ORDER_NOTIONAL` | `1.0` | Minimum dollar exposure for fractional stock or crypto entries |
 | `HARD_STOP_ATR_MULT` | `0` | Hard stop distance in ATR units from entry (0 = disabled) |
 | `ENABLE_BREAKEVEN_STOP` | `false` | Move stop to breakeven after N ATR of profit |
 | `ENABLE_PROFIT_LOCK` | `false` | Lock in partial profit after N ATR move |
@@ -50,7 +52,7 @@ Pre-built configs live in `config/`:
 | File | Symbol | Use |
 |---|---|---|
 | `config/paper_spy.env` | SPY | Paper trading equities |
-| `config/live_spy.env` | SPY | Live trading equities |
+| `config/live_spy.env` | SPY | Small-account live equities, fractional and long-only |
 | `config/paper_btc.env` | BTC/USD | Paper trading Bitcoin (24/7, fractional) |
 | `config/live_btc.env` | BTC/USD | Live trading Bitcoin (24/7, fractional) |
 
@@ -268,7 +270,16 @@ For BTC with a small account, recommended settings (already in `config/paper_btc
 - `TRAIL_ATR_MULTIPLIER=2.0` (BTC needs more room than equities)
 - `MAX_DAILY_LOSS=3` for the live BTC profile
 - `TREND_EMA_PERIOD=55` with minimum EMA-distance confirmation to filter weak mean-reversion noise
-- `MOMENTUM_LOOKBACK_BARS=3` plus `MIN_ADX_DELTA=0.25` to prefer strengthening breakouts over flat crossovers
+- `MOMENTUM_LOOKBACK_BARS=3` to prefer continuation entries over flat crossovers
+
+## Small Equity Accounts
+
+For a roughly `$150` SPY account, one whole SPY share is too large. Use `config/live_spy.env` or set:
+
+- `ALLOW_FRACTIONAL_EQUITIES=true`
+- `ALLOW_SHORTS=false`
+- `POSITION_SIZING_MODE=atr_risk`
+- `MAX_POSITION_NOTIONAL_PCT` and `TARGET_POSITION_NOTIONAL_PCT` high enough to create a real fractional order, but low enough to cap exposure
 
 ## Notes
 

@@ -130,6 +130,7 @@ Profile-specific validation:
 ```powershell
 python -m bot.profile_runner paper validate btc
 python -m bot.profile_runner live validate btc
+python -m bot.profile_runner live validate spy
 ```
 
 Current runtime defaults:
@@ -142,6 +143,7 @@ Current runtime defaults:
 - BTC paper writes runtime artifacts under `runtime/paper_btc`, BTC live under `runtime/live_btc`
 - The BTC paper profile mirrors the live BTC signal filters, with larger paper sizing for rehearsal
 - `reports/monitor_latest.md` includes 24h/7d rejection counts, near-miss entry bars, and latest filter metrics for diagnosing quiet BTC live periods
+- `config/live_spy.env` enables fractional, long-only SPY sizing for small live accounts; replay it before relying on it live.
 
 ## Notes
 

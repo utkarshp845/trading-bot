@@ -124,6 +124,7 @@ def run_replay(
     allow_shorts = cfg.allow_shorts
     hard_stop_atr_mult = float(os.getenv("HARD_STOP_ATR_MULT", "0"))
     is_crypto = _env_flag("IS_CRYPTO", False)
+    fractional_qty_enabled = is_crypto or (_env_flag("ALLOW_FRACTIONAL_EQUITIES", False) and not is_crypto)
     risk_config = RiskConfig(
         max_trades_per_day=int(os.getenv("MAX_TRADES_PER_DAY", "5")),
         max_daily_drawdown_pct=float(os.getenv("MAX_DAILY_DRAWDOWN_PCT", "0.01")),
@@ -253,8 +254,8 @@ def run_replay(
                 max_position_notional_pct,
                 target_position_notional_pct=target_position_notional_pct,
                 atr_risk_per_trade_pct=atr_risk_per_trade_pct,
-                fractional=is_crypto,
-                min_notional=float(os.getenv("MIN_ORDER_NOTIONAL", "1.0")) if is_crypto else 0.0,
+                fractional=fractional_qty_enabled,
+                min_notional=float(os.getenv("MIN_ORDER_NOTIONAL", "1.0")) if fractional_qty_enabled else 0.0,
             )
             entry_blockers = evaluate_replay_entry(
                 state,
@@ -467,6 +468,11 @@ def main() -> None:
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=lookback_days)
     bars = get_historical_bars(data, symbol, timeframe_minutes, start=start, end=end, limit=None)
+    if bars.empty:
+        raise RuntimeError(
+            "Research received no historical bars from Alpaca. Check credentials, symbol, market-data access, "
+            "and the selected lookback window."
+        )
     cfg = build_strategy_config(timeframe_minutes)
     equity_df, trades = run_replay(bars, cfg, sizing_mode, base_qty, starting_equity)
     trades_df = add_condition_buckets(pd.DataFrame(trades))

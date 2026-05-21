@@ -4,11 +4,16 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from bot import paths as paths_module
 from bot import profile as profile_module
 from bot.profile import load_profile
+from bot.validate_profile_env import validate_profile_env
 
 
 class ProfileTests(unittest.TestCase):
+    def tearDown(self):
+        paths_module.refresh_runtime_dirs()
+
     def test_paper_profile_sets_small_account_defaults(self):
         original = dict(os.environ)
         try:
@@ -87,9 +92,53 @@ class ProfileTests(unittest.TestCase):
             self.assertEqual(os.environ["MAX_DAILY_LOSS"], "3")
             self.assertEqual(os.environ["MAX_CONSECUTIVE_LOSSES"], "2")
             self.assertEqual(os.environ["MAX_TRADES_PER_DAY"], "3")
+            self.assertIn("live_btc", str(paths_module.DATA_DIR))
         finally:
             os.environ.clear()
             os.environ.update(original)
+
+    def test_live_btc_profile_env_contract_matches_config_file(self):
+        original = dict(os.environ)
+        try:
+            resolved = validate_profile_env("live", "btc")
+            self.assertEqual(resolved["SYMBOL"], "BTC/USD")
+            self.assertEqual(resolved["MAX_DAILY_LOSS"], "3")
+            self.assertEqual(resolved["MAX_TRADES_PER_DAY"], "3")
+        finally:
+            os.environ.clear()
+            os.environ.update(original)
+
+    def test_live_btc_profile_env_can_override_safety_defaults(self):
+        original = dict(os.environ)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "config").mkdir(parents=True, exist_ok=True)
+            (root / ".env").write_text(
+                "SYMBOL=SPY\n"
+                "IS_CRYPTO=false\n"
+                "MAX_DAILY_LOSS=100\n",
+                encoding="utf-8",
+            )
+            (root / "config" / "live_btc.env").write_text(
+                "SYMBOL=BTC/USD\n"
+                "IS_CRYPTO=true\n"
+                "MAX_DAILY_LOSS=5\n"
+                "MAX_TRADES_PER_DAY=4\n",
+                encoding="utf-8",
+            )
+            try:
+                os.environ.pop("SYMBOL", None)
+                os.environ.pop("IS_CRYPTO", None)
+                os.environ.pop("MAX_DAILY_LOSS", None)
+                os.environ.pop("MAX_TRADES_PER_DAY", None)
+                with patch.object(profile_module, "APP_ROOT", root):
+                    load_profile("live", "btc")
+                self.assertEqual(os.environ["MAX_DAILY_LOSS"], "5")
+                self.assertEqual(os.environ["MAX_TRADES_PER_DAY"], "4")
+                self.assertEqual(os.environ["POSITION_SIZING_MODE"], "atr_risk")
+            finally:
+                os.environ.clear()
+                os.environ.update(original)
 
     def test_profile_env_overrides_base_env(self):
         original = dict(os.environ)
