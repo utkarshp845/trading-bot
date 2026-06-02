@@ -5,6 +5,7 @@ import os
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from statistics import median
 
 import pandas as pd
@@ -12,7 +13,7 @@ from dotenv import load_dotenv
 from zoneinfo import ZoneInfo
 
 from bot.broker_alpaca import get_historical_bars, make_clients
-from bot.paths import REPORTS_DIR, ensure_runtime_dirs
+from bot.paths import APP_ROOT, REPORTS_DIR, ensure_runtime_dirs
 from bot.research import build_strategy_config, run_replay, summarize_replay, walk_forward_splits
 
 
@@ -202,7 +203,90 @@ def _aggregate_window_summaries(rows: list[dict]) -> dict:
     }
 
 
-def score_candidate(full_summary: dict, train_summary: dict, test_summary: dict) -> float:
+def _as_float(value: object, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_int(value: object, default: int = 0) -> int:
+    try:
+        if value is None:
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def load_strategy_evidence(path: str | None = None) -> dict | None:
+    configured = path or os.getenv("STRATEGY_EVIDENCE_PATH")
+    candidates: list[Path] = []
+    if configured:
+        candidates.append(Path(configured).expanduser())
+    candidates.extend(
+        [
+            REPORTS_DIR / "strategy_evidence_latest.json",
+            APP_ROOT / "reports" / "strategy_evidence_latest.json",
+        ]
+    )
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if not resolved.exists():
+            continue
+        try:
+            return json.loads(resolved.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+def _evidence_score_adjustment(evidence: dict | None, params: dict[str, str] | None) -> float:
+    if not evidence or not params:
+        return 0.0
+
+    research = evidence.get("research") or {}
+    worst_conditions = " ".join(str(item) for item in research.get("worst_conditions") or [])
+    best_conditions = " ".join(str(item) for item in research.get("best_conditions") or [])
+    adjustment = 0.0
+
+    min_volume_ratio = _as_float(params.get("MIN_VOLUME_RATIO"))
+    if "volume_ratio_bucket=0.8-1.0" in worst_conditions:
+        adjustment += 6.0 if min_volume_ratio >= 1.0 else -6.0
+
+    max_bars = _as_int(params.get("MAX_BARS_IN_TRADE"))
+    if "hold_bucket=<30m" in worst_conditions:
+        if "hold_bucket=60-120m" in best_conditions or "hold_bucket=120m+" in best_conditions:
+            if max_bars >= 18:
+                adjustment += 5.0
+            elif max_bars <= 6:
+                adjustment -= 8.0
+
+    databases = evidence.get("databases") or []
+    stale_count = sum(_as_int(db.get("stale_data_count")) for db in databases if isinstance(db, dict))
+    if stale_count > 0:
+        # Stale data is an operational issue, not an alpha source. Keep the
+        # adjustment small so it nudges candidates but cannot rescue bad replay.
+        adjustment -= min(5.0, stale_count * 0.5)
+
+    return adjustment
+
+
+def score_candidate(
+    full_summary: dict,
+    train_summary: dict,
+    test_summary: dict,
+    slippage_summary: dict | None = None,
+    evidence: dict | None = None,
+    params: dict[str, str] | None = None,
+) -> float:
     trade_count = int(test_summary.get("trade_count") or 0)
     if trade_count <= 0:
         return -1_000_000.0
@@ -211,12 +295,22 @@ def score_candidate(full_summary: dict, train_summary: dict, test_summary: dict)
     if trades_per_day < 0.5 or trades_per_day > 3.0:
         return -500_000.0 - abs(trades_per_day - 1.5) * 1000.0
 
+    if slippage_summary is not None:
+        slippage_trade_count = int(slippage_summary.get("trade_count") or 0)
+        slippage_net = float(slippage_summary.get("net_pnl") or 0.0)
+        slippage_expectancy = float(slippage_summary.get("expectancy") or 0.0)
+        if slippage_trade_count <= 0 or slippage_net < 0.0 or slippage_expectancy < 0.0:
+            return -400_000.0 + (slippage_net * 10.0)
+
     score = float(test_summary.get("net_pnl") or 0.0) * 10.0
     score += float(test_summary.get("positive_windows") or 0) * 8.0
     score += float(train_summary.get("positive_windows") or 0) * 2.0
     score += float(test_summary.get("profit_factor") or 0.0) * 20.0
     score += float(full_summary.get("profit_factor") or 0.0) * 5.0
     score += float(test_summary.get("median_window_net_pnl") or 0.0) * 5.0
+    if slippage_summary is not None:
+        score += float(slippage_summary.get("net_pnl") or 0.0) * 5.0
+        score += float(slippage_summary.get("profit_factor") or 0.0) * 10.0
 
     test_drawdown = abs(min(0.0, float(test_summary.get("max_drawdown") or 0.0)))
     full_drawdown = abs(min(0.0, float(full_summary.get("max_drawdown") or 0.0)))
@@ -227,6 +321,7 @@ def score_candidate(full_summary: dict, train_summary: dict, test_summary: dict)
     test_net = float(test_summary.get("net_pnl") or 0.0)
     score -= abs(train_net - test_net) * 0.5
     score -= abs(trades_per_day - 1.5) * 5.0
+    score += _evidence_score_adjustment(evidence, params)
     return round(score, 6)
 
 
@@ -258,6 +353,7 @@ def evaluate_candidate(
     train_days: int,
     test_days: int,
     params: dict[str, str],
+    evidence: dict | None = None,
 ) -> CandidateResult:
     with temporary_env(params):
         cfg = build_strategy_config(timeframe_minutes)
@@ -290,7 +386,14 @@ def evaluate_candidate(
 
     aggregate_train = _aggregate_window_summaries(train_windows)
     aggregate_test = _aggregate_window_summaries(test_windows)
-    score = score_candidate(full_summary, aggregate_train, aggregate_test)
+    score = score_candidate(
+        full_summary,
+        aggregate_train,
+        aggregate_test,
+        slippage_summary=slippage_2x_summary,
+        evidence=evidence,
+        params=params,
+    )
 
     return CandidateResult(
         params=params,
@@ -434,6 +537,7 @@ def write_report(path_md, path_json, payload: dict) -> None:
                 f"- Test avg trade: {_fmt_num(best['test_summary'].get('avg_pnl'), 4)}",
                 f"- Test max drawdown: {_fmt_pct(best['test_summary'].get('max_drawdown'))}",
                 f"- Full trades/day: {_fmt_num(best['full_summary'].get('trades_per_day'), 3)}",
+                f"- 2x slippage net P&L: {_fmt_num(best['slippage_2x_summary'].get('net_pnl'), 4)}",
                 f"- 2x slippage profit factor: {_fmt_num(best['slippage_2x_summary'].get('profit_factor'), 3)}",
                 f"- Positive test windows: {best['positive_test_windows']}/{best['window_count']}",
                 "",
@@ -454,6 +558,7 @@ def write_report(path_md, path_json, payload: dict) -> None:
             f"- #{idx} accepted={row['accepted']} score={_fmt_num(row['score'], 2)} test_net={_fmt_num(row['test_summary'].get('net_pnl'), 4)} "
             f"pf={_fmt_num(row['test_summary'].get('profit_factor'), 3)} "
             f"full_tpd={_fmt_num(row['full_summary'].get('trades_per_day'), 2)} "
+            f"slip2x_net={_fmt_num(row['slippage_2x_summary'].get('net_pnl'), 4)} "
             f"slip2x_pf={_fmt_num(row['slippage_2x_summary'].get('profit_factor'), 3)} "
             f"wins={row['positive_test_windows']}/{row['window_count']} "
             f"sma={params['SMA_FAST']}/{params['SMA_SLOW']} "
@@ -477,6 +582,8 @@ def write_report(path_md, path_json, payload: dict) -> None:
             "## Selection Notes",
             "- Baseline is the currently loaded profile over the exact same bars and walk-forward windows.",
             "- Acceptance requires full-sample PF >= 1.10, positive expectancy, 0.5-3.0 trades/day, positive walk-forward test net, at least two positive test windows, 2x slippage PF >= 1.0, and improvement over baseline.",
+            "- Candidates are heavily penalized if full-sample replay turns negative under 2x slippage.",
+            "- If `strategy_evidence_latest.json` exists, ranking nudges candidates toward historically stronger pattern classes and away from known weak ones.",
             "- Ranking favors positive walk-forward test windows, positive test P&L, and profit factor above 1.0, while penalizing larger drawdowns and train/test gaps.",
             "- This report reduces naive curve-fitting, but it still does not guarantee future profitability.",
             "",
@@ -502,6 +609,7 @@ def main() -> None:
     starting_equity = float(os.getenv("RESEARCH_STARTING_EQUITY", "100000"))
     top_n = int(os.getenv("OPT_REPORT_TOP_N", "5"))
     progress_every = max(1, int(os.getenv("OPT_PROGRESS_EVERY", "5")))
+    evidence = load_strategy_evidence()
 
     _log(
         f"starting symbol={symbol} timeframe={timeframe_minutes}m lookback_days={lookback_days} "
@@ -550,6 +658,7 @@ def main() -> None:
             train_days=train_days,
             test_days=test_days,
             params=params,
+            evidence=evidence,
         )
         results.append(result)
         if idx == 1 or idx % progress_every == 0 or idx == len(candidates):
@@ -571,6 +680,7 @@ def main() -> None:
         "candidate_count": len(ranked),
         "accepted_candidate_count": len(accepted),
         "window_count": window_count,
+        "strategy_evidence_loaded": evidence is not None,
         "baseline": _result_payload(baseline),
         "best_candidate": _result_payload(accepted[0] if accepted else ranked[0]) if ranked else None,
         "top_candidates": [_result_payload(result) for result in ranked[:top_n]],

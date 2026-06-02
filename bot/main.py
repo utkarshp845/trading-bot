@@ -132,6 +132,55 @@ def _entry_metrics_payload(signal: str, metrics: dict) -> dict:
     }
 
 
+def _dedupe(values: list[object]) -> list[str]:
+    tokens: list[str] = []
+    for value in values:
+        if value is None:
+            continue
+        for chunk in str(value).split(";"):
+            token = chunk.strip()
+            if token and token not in tokens:
+                tokens.append(token)
+    return tokens
+
+
+def _run_metrics_payload(
+    signal: str,
+    metrics: dict,
+    signal_reasons: list[str],
+    note_parts: list[str],
+    desired_action: str,
+    final_action: str,
+    intent: str | None,
+    action_type: str | None,
+    position_qty: float,
+    order_qty: float | None,
+    state,
+) -> dict:
+    payload = dict(metrics)
+    decision_reasons = _dedupe([*signal_reasons, *note_parts])
+    pass_reasons = {"long_entry_filters_passed", "short_entry_filters_passed", "cooldown_overridden_stronger_signal"}
+    payload.update(
+        {
+            "decision_signal": signal,
+            "decision_reasons": decision_reasons,
+            "blocker_reasons": [reason for reason in decision_reasons if reason not in pass_reasons],
+            "raw_signal_reasons": _dedupe(signal_reasons),
+            "note_reasons": _dedupe(note_parts),
+            "desired_action_before_risk": desired_action,
+            "final_action": final_action,
+            "intent": intent,
+            "action_type": action_type,
+            "position_qty": position_qty,
+            "computed_order_qty": order_qty,
+            "trades_today": state.trades_today,
+            "consecutive_losses": state.consecutive_losses,
+            "entry_failures_today": state.entry_failures_today,
+        }
+    )
+    return payload
+
+
 def _entry_meta_from_order(order, filled_avg: float | None) -> dict:
     try:
         payload = json.loads(order.entry_metrics_json) if order.entry_metrics_json else {}
@@ -934,9 +983,24 @@ def main():
         )
 
     note = ";".join(dict.fromkeys(note_parts)) if note_parts else None
-    metrics_json = json.dumps(metrics, sort_keys=True)
     reasons_text = ";".join(reasons) if reasons else None
     action_type = semantic_action_type(pos_qty, action)
+    metrics_json = json.dumps(
+        _run_metrics_payload(
+            signal,
+            metrics,
+            reasons,
+            note_parts,
+            desired_action,
+            action,
+            intent,
+            action_type,
+            pos_qty,
+            order_qty,
+            state,
+        ),
+        sort_keys=True,
+    )
 
     logger.info(
         f"price={last_price} sma_fast={v_fast} sma_slow={v_slow} "
