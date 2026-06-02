@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 from zoneinfo import ZoneInfo
@@ -12,6 +12,55 @@ from bot.paths import DATA_DIR, REPORTS_DIR, ensure_runtime_dirs
 
 
 ET = ZoneInfo("America/New_York")
+
+REJECTION_REASONS = [
+    "regime_filter_failed",
+    "adx_below_threshold",
+    "atr_too_high",
+    "volume_below_threshold",
+    "outside_time_window",
+    "sma_spread_below_atr_threshold",
+    "sma_spread_below_pct_threshold",
+    "trend_ema_filter_failed",
+    "pullback_depth_out_of_range",
+    "reaccel_not_confirmed",
+    "momentum_filter_failed",
+    "adx_not_accelerating",
+    "spike_bar_blocked",
+    "trend_up_no_entry",
+    "trend_down_no_entry",
+    "trend_neutral",
+    "short_signal_diagnostic_only",
+    "cooldown",
+    "max_trades_hit",
+    "max_entry_failures_hit",
+    "daily_loss_limit_hit",
+    "daily_drawdown_limit_hit",
+    "position_notional_limit_hit",
+    "stale_bar_data",
+    "position_sizing_blocked",
+]
+
+NEAR_MISS_IGNORED_REASONS = {
+    "trend_up_no_entry",
+    "trend_down_no_entry",
+    "trend_neutral",
+    "short_signal_diagnostic_only",
+    "cooldown_overridden_stronger_signal",
+}
+
+LATEST_METRIC_KEYS = [
+    "regime_side",
+    "regime_slope_pct",
+    "regime_adx",
+    "momentum_pct",
+    "pullback_depth_atr",
+    "pullback_depth_bucket",
+    "bar_range_atr",
+    "bar_body_atr",
+    "volume_ratio",
+    "signal_strength",
+]
 
 
 def _to_dt_utc(series: pd.Series) -> pd.Series:
@@ -28,6 +77,12 @@ def _fmt_pct(value) -> str:
     if value is None or pd.isna(value):
         return "n/a"
     return f"{float(value) * 100:.2f}%"
+
+
+def _fmt_num(value, digits: int = 4) -> str:
+    if value is None or pd.isna(value):
+        return "n/a"
+    return f"{float(value):.{digits}f}"
 
 
 def _fmt_ts(value) -> str:
@@ -48,6 +103,149 @@ def _condition_lines(df: pd.DataFrame, column: str, prefix: str) -> list[str]:
     for row in summarize_by_group(df, column)[:4]:
         lines.append(
             f"- {prefix} {row['bucket']}: trades={row['trade_count']} net={_fmt_money(row['net_pnl'])} avg={_fmt_money(row['avg_pnl'])}"
+        )
+    return lines
+
+
+def _split_reason_tokens(*values: object) -> list[str]:
+    tokens: list[str] = []
+    for value in values:
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            continue
+        for raw in str(value).split(";"):
+            token = raw.strip()
+            if token:
+                tokens.append(token)
+    return tokens
+
+
+def _reason_base(token: str) -> str:
+    return token.split("(", 1)[0].strip()
+
+
+def _count_reason_matches(df: pd.DataFrame, target_reasons: list[str]) -> dict[str, int]:
+    counts = {reason: 0 for reason in target_reasons}
+    if df.empty:
+        return counts
+
+    for row in df.itertuples():
+        row_tokens = _split_reason_tokens(getattr(row, "reasons", None), getattr(row, "note", None))
+        row_bases = {_reason_base(token) for token in row_tokens}
+        for target in target_reasons:
+            if target in row_bases:
+                counts[target] += 1
+    return counts
+
+
+def _reason_count_sections(runs: pd.DataFrame) -> dict[str, dict[str, int]]:
+    if runs.empty or "ts" not in runs.columns:
+        return {
+            "last_24h": _count_reason_matches(pd.DataFrame(), REJECTION_REASONS),
+            "last_7d": _count_reason_matches(pd.DataFrame(), REJECTION_REASONS),
+        }
+
+    now = pd.Timestamp(datetime.now(timezone.utc))
+    last_24h = runs[runs["ts"] >= now - pd.Timedelta(hours=24)]
+    last_7d = runs[runs["ts"] >= now - pd.Timedelta(days=7)]
+    return {
+        "last_24h": _count_reason_matches(last_24h, REJECTION_REASONS),
+        "last_7d": _count_reason_matches(last_7d, REJECTION_REASONS),
+    }
+
+
+def _top_reason_lines(counts: dict[str, int], limit: int = 8) -> list[str]:
+    top = [(reason, count) for reason, count in counts.items() if count > 0]
+    top.sort(key=lambda item: (-item[1], item[0]))
+    if not top:
+        return ["- No rejection reasons recorded in this window."]
+    return [f"- {reason}: {count}" for reason, count in top[:limit]]
+
+
+def _parse_metrics(value: object) -> dict:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return {}
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _latest_metric_lines(latest_run) -> list[str]:
+    if latest_run is None:
+        return []
+    metrics = _parse_metrics(latest_run.get("metrics_json"))
+    if not metrics:
+        return ["- Strategy metrics: n/a"]
+
+    parts: list[str] = []
+    for key in LATEST_METRIC_KEYS:
+        value = metrics.get(key)
+        if isinstance(value, float):
+            formatted = _fmt_num(value, 6 if key.endswith("_pct") else 4)
+        else:
+            formatted = "n/a" if value is None else str(value)
+        parts.append(f"{key}={formatted}")
+    return [f"- Strategy metrics: {'; '.join(parts)}"]
+
+
+def _near_miss_rows(runs: pd.DataFrame, limit: int = 10) -> list[dict]:
+    if runs.empty:
+        return []
+
+    near_misses: list[dict] = []
+    for row in runs.tail(500).itertuples():
+        signal = str(getattr(row, "signal", "") or "")
+        action = str(getattr(row, "desired_action", "") or "")
+        try:
+            position_qty = float(getattr(row, "position_qty", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            position_qty = 0.0
+        if signal != "HOLD" or action != "HOLD" or position_qty != 0.0:
+            continue
+
+        tokens = _split_reason_tokens(getattr(row, "reasons", None), getattr(row, "note", None))
+        blockers: list[str] = []
+        for token in tokens:
+            base = _reason_base(token)
+            if base in NEAR_MISS_IGNORED_REASONS:
+                continue
+            if base not in blockers:
+                blockers.append(base)
+        if not 1 <= len(blockers) <= 2:
+            continue
+
+        metrics = _parse_metrics(getattr(row, "metrics_json", None))
+        near_misses.append(
+            {
+                "ts": getattr(row, "ts", None),
+                "price": getattr(row, "price", None),
+                "blockers": blockers,
+                "regime_side": metrics.get("regime_side"),
+                "momentum_pct": metrics.get("momentum_pct"),
+                "pullback_depth_atr": metrics.get("pullback_depth_atr"),
+                "bar_range_atr": metrics.get("bar_range_atr"),
+                "volume_ratio": metrics.get("volume_ratio"),
+                "signal_strength": metrics.get("signal_strength"),
+            }
+        )
+
+    return near_misses[-limit:]
+
+
+def _near_miss_lines(rows: list[dict]) -> list[str]:
+    if not rows:
+        return ["- No near-miss entry bars found in the recent run window."]
+
+    lines: list[str] = []
+    for row in rows:
+        lines.append(
+            f"- {_fmt_ts(row['ts'])} price={_fmt_money(row.get('price'))} blockers={';'.join(row['blockers'])} "
+            f"regime={row.get('regime_side') or 'n/a'} momentum={_fmt_num(row.get('momentum_pct'), 6)} "
+            f"pullback={_fmt_num(row.get('pullback_depth_atr'), 3)} range_atr={_fmt_num(row.get('bar_range_atr'), 3)} "
+            f"volume_ratio={_fmt_num(row.get('volume_ratio'), 3)} strength={_fmt_num(row.get('signal_strength'), 3)}"
         )
     return lines
 
@@ -95,6 +293,8 @@ def main() -> None:
     latest_events = events.tail(20) if not events.empty else pd.DataFrame()
     pending_orders = orders[orders["processed_at"].isna()] if not orders.empty and "processed_at" in orders.columns else pd.DataFrame()
     summary = closed_trade_summary(closed)
+    rejection_counts = _reason_count_sections(runs)
+    near_misses = _near_miss_rows(runs)
 
     pnl_by_hour_lines: list[str] = []
     if not closed.empty and "pnl" in closed.columns:
@@ -180,6 +380,7 @@ def main() -> None:
                 f"- Reasons: {latest_run.get('reasons') or 'n/a'}",
             ]
         )
+        latest_run_lines.extend(_latest_metric_lines(latest_run))
 
     profit_factor_text = "n/a" if summary["profit_factor"] is None else f"{summary['profit_factor']:.2f}"
     lines = [
@@ -205,6 +406,16 @@ def main() -> None:
             "",
             "## Pending Orders",
             *pending_lines,
+            "",
+            "## Rejection Counts",
+            "Last 24h:",
+            *_top_reason_lines(rejection_counts["last_24h"]),
+            "",
+            "Last 7d:",
+            *_top_reason_lines(rejection_counts["last_7d"]),
+            "",
+            "## Near-Miss Entry Bars",
+            *_near_miss_lines(near_misses),
             "",
             "## Closed Trade Summary",
             f"- Trades: {summary['trade_count']}",
@@ -265,6 +476,8 @@ def main() -> None:
                 "state": [] if state.empty else state.to_dict(orient="records"),
                 "positions": [] if positions.empty else positions.to_dict(orient="records"),
                 "pending_orders": [] if pending_orders.empty else pending_orders.to_dict(orient="records"),
+                "rejection_counts": rejection_counts,
+                "near_misses": near_misses,
                 "closed_trade_summary": summary,
             },
             default=str,

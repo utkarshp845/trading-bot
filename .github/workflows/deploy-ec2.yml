@@ -123,5 +123,4 @@ jobs:
       - name: Verify remote runtime env
         run: |
           ssh -i "$HOME/.ssh/deploy_key" -p "$EC2_PORT" "$EC2_USER@$EC2_HOST" \
-            "cd '$EC2_APP_DIR' && test -s .env && docker compose run --rm --entrypoint python -e DEPLOY_PROFILE='$DEPLOY_PROFILE' -e DEPLOY_MARKET='$DEPLOY_MARKET' trade -c 'from bot.profile import load_profile; import os; profile = os.environ[\"DEPLOY_PROFILE\"]; market = os.environ[\"DEPLOY_MARKET\"]; load_profile(profile, market); assert os.getenv(\"SYMBOL\") == \"BTC/USD\", os.getenv(\"SYMBOL\"); assert os.getenv(\"IS_CRYPTO\") == \"true\", os.getenv(\"IS_CRYPTO\"); assert os.getenv(\"POSITION_SIZING_MODE\") == \"atr_risk\", os.getenv(\"POSITION_SIZING_MODE\"); assert os.getenv(\"ENABLE_STALE_BAR_CHECK\") == \"true\", os.getenv(\"ENABLE_STALE_BAR_CHECK\"); assert os.getenv(\"MAX_DAILY_LOSS\") == \"2\", os.getenv(\"MAX_DAILY_LOSS\"); print(\"remote profile ok:\", os.getenv(\"BOT_PROFILE\"), os.getenv(\"BOT_MARKET\"), os.getenv(\"SYMBOL\"), os.getenv(\"POSITION_SIZING_MODE\"), os.getenv(\"ENABLE_STALE_BAR_CHECK\"))'"
-
+            "cd '$EC2_APP_DIR' && test -s .env && docker compose run --rm --entrypoint python -e DEPLOY_PROFILE='$DEPLOY_PROFILE' -e DEPLOY_MARKET='$DEPLOY_MARKET' trade -m bot.validate_profile_env"

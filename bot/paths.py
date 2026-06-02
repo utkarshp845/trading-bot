@@ -17,11 +17,21 @@ def _resolve_app_root() -> Path:
 
 
 APP_ROOT = _resolve_app_root()
-DATA_DIR = Path(os.getenv("BOT_DATA_DIR", APP_ROOT / "data")).expanduser()
-LOGS_DIR = Path(os.getenv("BOT_LOGS_DIR", APP_ROOT / "logs")).expanduser()
-REPORTS_DIR = Path(os.getenv("BOT_REPORTS_DIR", APP_ROOT / "reports")).expanduser()
+DATA_DIR: Path
+LOGS_DIR: Path
+REPORTS_DIR: Path
+
+
+def refresh_runtime_dirs() -> None:
+    global DATA_DIR, LOGS_DIR, REPORTS_DIR
+    DATA_DIR = Path(os.getenv("BOT_DATA_DIR", APP_ROOT / "data")).expanduser()
+    LOGS_DIR = Path(os.getenv("BOT_LOGS_DIR", APP_ROOT / "logs")).expanduser()
+    REPORTS_DIR = Path(os.getenv("BOT_REPORTS_DIR", APP_ROOT / "reports")).expanduser()
 
 
 def ensure_runtime_dirs() -> None:
     for path in (DATA_DIR, LOGS_DIR, REPORTS_DIR):
         path.mkdir(parents=True, exist_ok=True)
+
+
+refresh_runtime_dirs()

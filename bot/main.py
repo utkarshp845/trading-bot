@@ -476,6 +476,8 @@ def main():
     allow_overnight_holding = _env_flag("ALLOW_OVERNIGHT_HOLDING", False)
     flatten_before_close_minutes = max(0, int(os.getenv("FLATTEN_BEFORE_CLOSE_MINUTES", "5")))
     is_crypto = _env_flag("IS_CRYPTO", False)
+    allow_fractional_equities = _env_flag("ALLOW_FRACTIONAL_EQUITIES", False) and not is_crypto
+    fractional_qty_enabled = is_crypto or allow_fractional_equities
     max_consecutive_entry_failures_per_day = max(0, int(os.getenv("MAX_CONSECUTIVE_ENTRY_FAILURES_PER_DAY", "0")))
 
     ts = utc_iso_now()
@@ -483,7 +485,8 @@ def main():
         f"Run start ts={ts} symbol={symbol} tf={timeframe_minutes}m qty={qty} "
         f"strategy_version={strategy_version} stale_bar_check={'enabled' if stale_bar_checks_enabled else 'disabled'} "
         f"max_bar_age_seconds={max_bar_age_seconds} startup_delay={startup_delay_seconds}s sizing_mode={sizing_mode} "
-        f"allow_overnight_holding={allow_overnight_holding} flatten_before_close_minutes={flatten_before_close_minutes}"
+        f"allow_overnight_holding={allow_overnight_holding} flatten_before_close_minutes={flatten_before_close_minutes} "
+        f"fractional_qty_enabled={fractional_qty_enabled}"
     )
 
     trading, data = make_clients()
@@ -506,6 +509,7 @@ def main():
             "position_sizing_mode": sizing_mode,
             "allow_overnight_holding": allow_overnight_holding,
             "flatten_before_close_minutes": flatten_before_close_minutes,
+            "fractional_qty_enabled": fractional_qty_enabled,
         },
     )
 
@@ -876,8 +880,8 @@ def main():
             max_position_notional_pct,
             target_position_notional_pct=float(os.getenv("TARGET_POSITION_NOTIONAL_PCT", str(max_position_notional_pct))),
             atr_risk_per_trade_pct=float(os.getenv("ATR_RISK_PER_TRADE_PCT", "0.0025")),
-            fractional=is_crypto,
-            min_notional=float(os.getenv("MIN_ORDER_NOTIONAL", "1.0")) if is_crypto else 0.0,
+            fractional=fractional_qty_enabled,
+            min_notional=float(os.getenv("MIN_ORDER_NOTIONAL", "1.0")) if fractional_qty_enabled else 0.0,
         )
         risk_eval = evaluate_entry_risk(
             RiskConfig(
@@ -1014,7 +1018,7 @@ def main():
 
     if action == "BUY":
         if pos_qty < 0:
-            cover_qty = abs(float(pos_qty)) if is_crypto else int(abs(float(pos_qty)))
+            cover_qty = abs(float(pos_qty)) if fractional_qty_enabled else int(abs(float(pos_qty)))
             if cover_qty > 0:
                 order_info = place_market_order(trading, symbol, "buy", cover_qty)
                 executed_qty = cover_qty
@@ -1027,7 +1031,7 @@ def main():
             order_intent = "entry"
     elif action == "SELL":
         if pos_qty > 0:
-            sell_qty = float(pos_qty) if is_crypto else int(float(pos_qty))
+            sell_qty = float(pos_qty) if fractional_qty_enabled else int(float(pos_qty))
             if sell_qty > 0:
                 order_info = place_market_order(trading, symbol, "sell", sell_qty)
                 executed_qty = sell_qty

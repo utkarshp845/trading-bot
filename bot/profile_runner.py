@@ -6,7 +6,7 @@ from bot.profile import load_profile
 
 
 def _usage() -> int:
-    print("Usage: python -m bot.profile_runner <paper|live|paper-btc|live-btc> <trade|monitor|research|validate> [spy|btc]")
+    print("Usage: python -m bot.profile_runner <paper|live|paper-btc|live-btc> <trade|monitor|research|optimize|validate> [spy|btc]")
     return 2
 
 
@@ -35,6 +35,12 @@ def main(argv: list[str] | None = None) -> int:
         from bot.research import main as research_main
 
         research_main()
+        return 0
+
+    if action == "optimize":
+        from bot.optimize_strategy import main as optimize_main
+
+        optimize_main()
         return 0
 
     if action == "validate":

@@ -3,8 +3,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
+from bot import paths as paths_module
 from bot.paths import APP_ROOT
 
 
@@ -15,17 +16,17 @@ SUPPORTED_MARKETS = {"spy", "btc"}
 LIVE_BTC_SAFETY_ENV = {
     "ALLOW_SHORTS": "false",
     "POSITION_SIZING_MODE": "atr_risk",
-    "ATR_RISK_PER_TRADE_PCT": "0.005",
-    "MAX_POSITION_NOTIONAL_PCT": "0.25",
-    "TARGET_POSITION_NOTIONAL_PCT": "0.20",
+    "ATR_RISK_PER_TRADE_PCT": "0.0075",
+    "MAX_POSITION_NOTIONAL_PCT": "0.35",
+    "TARGET_POSITION_NOTIONAL_PCT": "0.30",
     "MIN_ORDER_NOTIONAL": "1.0",
     "HARD_STOP_ATR_MULT": "2.0",
     "ENABLE_STALE_BAR_CHECK": "true",
     "MAX_BAR_AGE_SECONDS": "600",
     "MAX_DAILY_DRAWDOWN_PCT": "0.025",
-    "MAX_DAILY_LOSS": "2",
-    "MAX_CONSECUTIVE_LOSSES": "1",
-    "MAX_TRADES_PER_DAY": "2",
+    "MAX_DAILY_LOSS": "3",
+    "MAX_CONSECUTIVE_LOSSES": "2",
+    "MAX_TRADES_PER_DAY": "3",
     "MAX_CONSECUTIVE_ENTRY_FAILURES_PER_DAY": "1",
 }
 
@@ -53,12 +54,14 @@ def _normalize_profile_market(profile: str, market: str | None = None) -> tuple[
     return raw_profile, raw_market
 
 
-def _load_profile_env(profile: str, market: str) -> None:
+def _load_profile_env(profile: str, market: str) -> set[str]:
     profile_env = APP_ROOT / "config" / f"{profile}_{market}.env"
     if profile_env.exists():
         # Match docker-compose env_file precedence: profile-specific values
         # should override the base .env for that profile's runtime.
         load_dotenv(profile_env, override=True)
+        return {key for key in dotenv_values(profile_env).keys() if key is not None}
+    return set()
 
 
 def _bind_profile_credentials(profile: str) -> None:
@@ -81,6 +84,7 @@ def _set_runtime_dirs(profile: str, market: str) -> None:
     os.environ["BOT_DATA_DIR"] = str(runtime_root / "data")
     os.environ["BOT_LOGS_DIR"] = str(runtime_root / "logs")
     os.environ["BOT_REPORTS_DIR"] = str(runtime_root / "reports")
+    paths_module.refresh_runtime_dirs()
 
 
 def _set_market_defaults(market: str) -> None:
@@ -103,7 +107,8 @@ def _set_market_defaults(market: str) -> None:
     raise ValueError(f"Unsupported bot market: {market}")
 
 
-def _set_profile_defaults(profile: str, market: str) -> None:
+def _set_profile_defaults(profile: str, market: str, profile_env_keys: set[str] | None = None) -> None:
+    profile_env_keys = profile_env_keys or set()
     os.environ["BOT_PROFILE"] = profile
     _set_market_defaults(market)
 
@@ -120,16 +125,18 @@ def _set_profile_defaults(profile: str, market: str) -> None:
         raise ValueError(f"Unsupported bot profile: {profile}")
 
     if profile == "live" and market == "btc":
-        os.environ.update(LIVE_BTC_SAFETY_ENV)
+        for key, value in LIVE_BTC_SAFETY_ENV.items():
+            if key not in profile_env_keys:
+                os.environ[key] = value
 
 
 def load_profile(profile: str, market: str | None = None) -> None:
     normalized_profile, normalized_market = _normalize_profile_market(profile, market)
     _load_base_env()
-    _load_profile_env(normalized_profile, normalized_market)
+    profile_env_keys = _load_profile_env(normalized_profile, normalized_market)
     _bind_profile_credentials(normalized_profile)
     _set_runtime_dirs(normalized_profile, normalized_market)
-    _set_profile_defaults(normalized_profile, normalized_market)
+    _set_profile_defaults(normalized_profile, normalized_market, profile_env_keys)
 
 
 def profile_runtime_root(profile: str, market: str | None = None) -> Path:

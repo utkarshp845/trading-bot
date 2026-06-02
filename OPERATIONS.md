@@ -82,6 +82,12 @@ Run the parameter optimizer:
 docker compose run --rm optimize
 ```
 
+BTC live tuning through the profile runner:
+
+```powershell
+python -m bot.profile_runner live optimize btc
+```
+
 If you want a quicker sanity check first:
 
 ```powershell
@@ -93,6 +99,8 @@ Outputs:
 
 - `reports/optimize_latest.md`
 - `reports/optimize_latest.json`
+
+The BTC live optimizer report includes the loaded live baseline, top candidates, acceptance checks, and 2x-slippage stress. Do not treat a candidate as deployable unless it is marked accepted in the report.
 
 Useful optional env controls:
 
@@ -122,6 +130,7 @@ Profile-specific validation:
 ```powershell
 python -m bot.profile_runner paper validate btc
 python -m bot.profile_runner live validate btc
+python -m bot.profile_runner live validate spy
 ```
 
 Current runtime defaults:
@@ -132,7 +141,9 @@ Current runtime defaults:
 - end-of-day flattening starts `5` minutes before the close by default; override with `FLATTEN_BEFORE_CLOSE_MINUTES`
 - `paper` and `trade` select separate Alpaca key pairs from `.env` when `ALPACA_PAPER_*` and `ALPACA_LIVE_*` variables are set
 - BTC paper writes runtime artifacts under `runtime/paper_btc`, BTC live under `runtime/live_btc`
-- The BTC paper profile mirrors the live BTC strategy so paper runs are a closer dress rehearsal
+- The BTC paper profile mirrors the live BTC signal filters, with larger paper sizing for rehearsal
+- `reports/monitor_latest.md` includes 24h/7d rejection counts, near-miss entry bars, and latest filter metrics for diagnosing quiet BTC live periods
+- `config/live_spy.env` enables fractional, long-only SPY sizing for small live accounts; replay it before relying on it live.
 
 ## Notes
 

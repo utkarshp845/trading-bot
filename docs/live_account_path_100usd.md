@@ -57,29 +57,22 @@ Why this profile:
 - It removes shorting, which a small starter account should not depend on.
 - It matches the operational goal of learning safely instead of forcing scale too early.
 
-## What Must Change In Code Before Live
+## Small-Account Implementation Status
 
-Documentation only is being delivered here, but the code still needs a few concrete upgrades before a `$100` live account is reasonable.
+The repo now has the core mechanics needed for a small live account, but replay and paper validation should still come before scaling.
 
-Required changes:
-- Fractional or notional order support in the broker layer
-  - live orders should be sized by dollars or fractional quantity
-  - integer-only quantity is not enough for a small `SPY` setup
-- Long-only enforcement
-  - both live and replay paths should be able to disable shorts explicitly
-- Separate small-live config profile
-  - do not reuse the same defaults as the broader paper profile
-  - keep a dedicated small-live set of constraints
+Implemented:
+- Fractional equity sizing through `ALLOW_FRACTIONAL_EQUITIES=true`
+- Long-only enforcement through `ALLOW_SHORTS=false`
+- Small-account live profiles in `config/live_spy.env` and `config/live_btc.env`
+- Replay support for the same sizing and long-only behavior used live
+
+Still recommended before increasing capital:
 - Broker capability validation at startup
   - reject startup if the account cannot support the requested order mode
   - reject startup if config implies behavior that does not fit the account profile
-- Replay support for the exact live profile
-  - same symbol logic
-  - same long-only restriction
-  - same sizing mode
-  - same session window
-
-Without these changes, paper results and live behavior will still be too far apart.
+- Walk-forward replay for the exact live profile
+- Paper trading with the exact same profile and risk caps
 
 ## Suggested Rollout Stages
 

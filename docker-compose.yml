@@ -26,6 +26,18 @@ services:
     <<: *bot
     command: ["python", "-m", "bot.profile_runner", "paper", "monitor", "btc"]
 
+  research:
+    <<: *bot
+    command: ["python", "-m", "bot.profile_runner", "live", "research", "btc"]
+
+  optimize:
+    <<: *bot
+    command: ["python", "-m", "bot.profile_runner", "live", "optimize", "btc"]
+
+  live-optimize:
+    <<: *bot
+    command: ["python", "-m", "bot.profile_runner", "live", "optimize", "btc"]
+
   validate:
     build: .
     env_file:
