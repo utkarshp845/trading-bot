@@ -65,6 +65,69 @@ class OptimizeStrategyTests(unittest.TestCase):
             score_candidate(weak_full, weak_train, weak_test),
         )
 
+    def test_score_candidate_penalizes_negative_two_x_slippage(self):
+        full = {"profit_factor": 1.2, "max_drawdown": -0.01, "trades_per_day": 3.0}
+        train = {"net_pnl": 4.0, "positive_windows": 3}
+        test = {
+            "trade_count": 20,
+            "net_pnl": 3.0,
+            "profit_factor": 1.2,
+            "positive_windows": 3,
+            "median_window_net_pnl": 0.5,
+            "max_drawdown": -0.01,
+        }
+
+        score = score_candidate(
+            full,
+            train,
+            test,
+            slippage_summary={"trade_count": 20, "net_pnl": -0.25, "expectancy": -0.0125, "profit_factor": 0.95},
+        )
+
+        self.assertLess(score, -300000)
+
+    def test_strategy_evidence_nudges_candidate_toward_stronger_patterns(self):
+        full = {"profit_factor": 1.2, "max_drawdown": -0.01, "trades_per_day": 3.0}
+        train = {"net_pnl": 4.0, "positive_windows": 3}
+        test = {
+            "trade_count": 20,
+            "net_pnl": 3.0,
+            "profit_factor": 1.2,
+            "positive_windows": 3,
+            "median_window_net_pnl": 0.5,
+            "max_drawdown": -0.01,
+        }
+        slippage = {"trade_count": 20, "net_pnl": 2.0, "expectancy": 0.1, "profit_factor": 1.15}
+        evidence = {
+            "research": {
+                "best_conditions": ["- hold_bucket=60-120m: avg=1.07 trades=23"],
+                "worst_conditions": [
+                    "- volume_ratio_bucket=0.8-1.0: avg=-0.38 trades=35",
+                    "- hold_bucket=<30m: avg=-0.98 trades=77",
+                ],
+            },
+            "databases": [],
+        }
+
+        preferred = score_candidate(
+            full,
+            train,
+            test,
+            slippage_summary=slippage,
+            evidence=evidence,
+            params={"MIN_VOLUME_RATIO": "1.1", "MAX_BARS_IN_TRADE": "18"},
+        )
+        weak = score_candidate(
+            full,
+            train,
+            test,
+            slippage_summary=slippage,
+            evidence=evidence,
+            params={"MIN_VOLUME_RATIO": "0.8", "MAX_BARS_IN_TRADE": "6"},
+        )
+
+        self.assertGreater(preferred, weak)
+
     def test_recommended_env_block_contains_key_parameters(self):
         block = _recommended_env_block(
             {
