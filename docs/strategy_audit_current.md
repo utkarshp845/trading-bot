@@ -1,4 +1,11 @@
-# Current Strategy Audit
+# Strategy Audit — 2026-04-14 (superseded)
+
+> **Superseded 2026-07-12.** This audit covers the intraday SPY 5m
+> filter-stack strategy that was live at the time. That strategy has since
+> been replaced — see `docs/strategy_revamp_2026-07.md` and
+> `docs/BUILD_LOG.md` for the current strategy, evidence, and status. Kept
+> here as a historical record; do not use the config snapshot or verdict
+> below as current.
 
 Date: 2026-04-14
 

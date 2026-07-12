@@ -71,6 +71,8 @@ Small-account BTC paper rehearsal:
 python -m bot.profile_runner paper research btc
 ```
 
+Both `spy` (QQQ) and `btc` research runs now use $150 starting equity to match the real account.
+
 Outputs:
 
 - `reports/research_latest.md`
@@ -111,16 +113,25 @@ Useful optional env controls:
 
 ## Normal Bot Run
 
-Run one BTC bot cycle:
+Run one bot cycle (equity profile, the default live deployment target):
 
 ```powershell
 docker compose run --rm paper
 docker compose run --rm trade
 ```
 
+BTC variants:
+
+```powershell
+docker compose run --rm paper-btc
+docker compose run --rm trade-btc
+```
+
 Direct profile runner equivalents:
 
 ```powershell
+python -m bot.profile_runner paper trade spy
+python -m bot.profile_runner live trade spy
 python -m bot.profile_runner paper trade btc
 python -m bot.profile_runner live trade btc
 ```
@@ -128,9 +139,10 @@ python -m bot.profile_runner live trade btc
 Profile-specific validation:
 
 ```powershell
+python -m bot.profile_runner paper validate spy
+python -m bot.profile_runner live validate spy
 python -m bot.profile_runner paper validate btc
 python -m bot.profile_runner live validate btc
-python -m bot.profile_runner live validate spy
 ```
 
 Current runtime defaults:
@@ -141,15 +153,15 @@ Current runtime defaults:
 - end-of-day flattening starts `5` minutes before the close by default; override with `FLATTEN_BEFORE_CLOSE_MINUTES`
 - `paper` and `trade` select separate Alpaca key pairs from `.env` when `ALPACA_PAPER_*` and `ALPACA_LIVE_*` variables are set
 - BTC paper writes runtime artifacts under `runtime/paper_btc`, BTC live under `runtime/live_btc`
-- The BTC paper profile mirrors the live BTC signal filters, with larger paper sizing for rehearsal
+- `config/paper_btc.env` is an exact mirror of `config/live_btc.env` (same sizing, same filters) so paper fills validate the strategy that actually runs live
 - `reports/monitor_latest.md` includes 24h/7d rejection counts, near-miss entry bars, and latest filter metrics for diagnosing quiet BTC live periods
-- `config/live_spy.env` enables fractional, long-only SPY sizing for small live accounts; replay it before relying on it live.
+- `config/live_spy.env` trades QQQ on hourly bars (fractional, long-only, ~90% notional) and is the recommended default live profile for a small account; see `docs/strategy_revamp_2026-07.md` for the replay evidence. Replay any change to it before relying on it live.
 
 ## Notes
 
 - Start Docker Desktop before using the commands above.
 - Keep real Alpaca keys only in the local untracked `.env`.
-- Alpaca's paper account balance still needs to be adjusted in the dashboard. The repo now mirrors that target by using roughly `$250` as the paper research starting equity.
+- Alpaca's paper account balance still needs to be adjusted in the dashboard. The repo now mirrors that target by using `$150` as the paper research starting equity (see `RESEARCH_STARTING_EQUITY` in `config/paper_spy.env` and `config/paper_btc.env`).
 - Review `reports/monitor_latest.md` after each trading session if you want a concise explanation of what the bot did and why.
 
 ## EC2 Deploy

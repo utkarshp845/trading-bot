@@ -10,8 +10,8 @@ What it does:
 - syncs the repo to the server
 - uploads the runtime `.env`
 - builds the Docker image on EC2
-- runs `python -m bot.profile_runner <paper|live> validate btc` on EC2
-- installs a cron job that runs the chosen BTC profile every 5 minutes in `America/New_York`
+- runs `python -m bot.profile_runner <paper|live> validate spy` on EC2 (or `btc` if `DEPLOY_MARKET=btc`)
+- installs a cron job that runs the chosen profile once an hour in `America/New_York`
 
 ## Required GitHub Secrets
 
@@ -112,8 +112,17 @@ If you want a different schedule, set `CRON_SCHEDULE` before running `deploy/ec2
 
 Current default schedule:
 
-- every 5 minutes
+- once an hour, 5 minutes past the hour (`5 * * * *`)
 - every day
 - `America/New_York` timezone
 
-Because the deployed profile is BTC, 24/7 scheduling is the correct default. If you later switch the deployment target back to equities, override `CRON_SCHEDULE` before running the installer.
+The default deploy market is `spy` (`SYMBOL=QQQ`, see `config/live_spy.env`),
+which trades hourly bars during the equity session — the bot itself checks
+market hours and holds outside them, so running the cron job around the
+clock is harmless, just a no-op most of the day. The `btc` market
+(`config/live_btc.env`) also trades hourly bars now, so the same schedule
+applies; set `DEPLOY_MARKET=btc` on the workflow dispatch to deploy it
+instead. If you change a profile's `TIMEFRAME_MINUTES`, update
+`CRON_SCHEDULE` to match — running the bot much more often than its bar
+interval just wastes API calls and log lines, since cooldown and
+pending-order checks will no-op the extra invocations.

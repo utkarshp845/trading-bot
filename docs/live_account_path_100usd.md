@@ -1,4 +1,10 @@
-# Live Account Path For A $100 Starting Account
+# Live Account Path For A $100 Starting Account — 2026-04-14 (superseded)
+
+> **Superseded 2026-07-12.** This recommended a morning-only intraday SPY
+> profile, which was never the strategy that ended up deployed. The account
+> is now ~$150 and the deployed strategy is an hourly QQQ trend-follow — see
+> `docs/strategy_revamp_2026-07.md` and `docs/BUILD_LOG.md`. Kept here as a
+> historical record.
 
 Date: 2026-04-14
 
