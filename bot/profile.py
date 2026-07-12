@@ -87,30 +87,38 @@ def _set_runtime_dirs(profile: str, market: str) -> None:
     paths_module.refresh_runtime_dirs()
 
 
-def _set_market_defaults(market: str) -> None:
+def _set_market_defaults(market: str, profile_env_keys: set[str] | None = None) -> None:
     os.environ["BOT_MARKET"] = market
+    profile_env_keys = profile_env_keys or set()
 
     if market == "spy":
-        os.environ["SYMBOL"] = "SPY"
-        os.environ["IS_CRYPTO"] = "false"
-        os.environ["ALLOW_OVERNIGHT_HOLDING"] = "false"
-        os.environ["FLATTEN_BEFORE_CLOSE_MINUTES"] = "5"
-        return
+        defaults = {
+            "SYMBOL": "SPY",
+            "IS_CRYPTO": "false",
+            "ALLOW_OVERNIGHT_HOLDING": "false",
+            "FLATTEN_BEFORE_CLOSE_MINUTES": "5",
+        }
+    elif market == "btc":
+        defaults = {
+            "SYMBOL": "BTC/USD",
+            "IS_CRYPTO": "true",
+            "ALLOW_OVERNIGHT_HOLDING": "true",
+            "FLATTEN_BEFORE_CLOSE_MINUTES": "0",
+        }
+    else:
+        raise ValueError(f"Unsupported bot market: {market}")
 
-    if market == "btc":
-        os.environ["SYMBOL"] = "BTC/USD"
-        os.environ["IS_CRYPTO"] = "true"
-        os.environ["ALLOW_OVERNIGHT_HOLDING"] = "true"
-        os.environ["FLATTEN_BEFORE_CLOSE_MINUTES"] = "0"
-        return
-
-    raise ValueError(f"Unsupported bot market: {market}")
+    # The profile's env file is the operator's explicit intent; market values
+    # only fill the gaps (same contract as LIVE_BTC_SAFETY_ENV below).
+    for key, value in defaults.items():
+        if key not in profile_env_keys:
+            os.environ[key] = value
 
 
 def _set_profile_defaults(profile: str, market: str, profile_env_keys: set[str] | None = None) -> None:
     profile_env_keys = profile_env_keys or set()
     os.environ["BOT_PROFILE"] = profile
-    _set_market_defaults(market)
+    _set_market_defaults(market, profile_env_keys)
 
     if profile == "paper":
         os.environ["ALPACA_PAPER"] = "true"

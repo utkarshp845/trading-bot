@@ -1,3 +1,4 @@
+import math
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -104,10 +105,20 @@ def get_historical_bars(
 
 def get_recent_bars(data_client: StockHistoricalDataClient | CryptoHistoricalDataClient, symbol: str, timeframe_minutes: int, limit: int = 200) -> pd.DataFrame:
     """
-    Fetch recent bars. For SMA(50) on 5-min bars, 200 bars is plenty for warmup.
+    Fetch recent bars, looking back far enough to actually cover `limit` bars.
+
+    Crypto trades around the clock, but equities only print bars for ~6.5
+    session hours on ~5 of 7 days, so the calendar window must be much wider
+    than `limit * timeframe` or higher-timeframe regime indicators never warm up.
     """
     end = datetime.now(timezone.utc)
-    start = end - timedelta(days=7)
+    minutes_needed = timeframe_minutes * limit
+    if isinstance(data_client, CryptoHistoricalDataClient):
+        lookback_days = math.ceil(minutes_needed / (60 * 24)) + 2
+    else:
+        session_days = minutes_needed / (60 * 6.5)
+        lookback_days = math.ceil(session_days * 7 / 5) + 5
+    start = end - timedelta(days=max(7, lookback_days))
     bars = get_historical_bars(data_client, symbol, timeframe_minutes, start=start, end=end, limit=None)
     if bars.empty:
         return bars

@@ -23,8 +23,8 @@ class ProfileTests(unittest.TestCase):
             os.environ.pop("RESEARCH_STARTING_EQUITY", None)
             load_profile("paper")
             self.assertEqual(os.environ["ALPACA_PAPER"], "true")
-            self.assertEqual(os.environ["SYMBOL"], "SPY")
-            self.assertEqual(os.environ["RESEARCH_STARTING_EQUITY"], "250")
+            self.assertEqual(os.environ["SYMBOL"], "QQQ")
+            self.assertEqual(os.environ["RESEARCH_STARTING_EQUITY"], "150")
             self.assertIn("runtime", os.environ["BOT_DATA_DIR"])
             self.assertIn("paper", os.environ["BOT_DATA_DIR"])
         finally:
@@ -39,7 +39,7 @@ class ProfileTests(unittest.TestCase):
             os.environ.pop("BOT_REPORTS_DIR", None)
             load_profile("live")
             self.assertEqual(os.environ["ALPACA_PAPER"], "false")
-            self.assertEqual(os.environ["SYMBOL"], "SPY")
+            self.assertEqual(os.environ["SYMBOL"], "QQQ")
             self.assertIn("live", os.environ["BOT_DATA_DIR"])
         finally:
             os.environ.clear()
@@ -85,13 +85,12 @@ class ProfileTests(unittest.TestCase):
             load_profile("live", "btc")
             self.assertEqual(os.environ["ALPACA_PAPER"], "false")
             self.assertEqual(os.environ["SYMBOL"], "BTC/USD")
-            self.assertEqual(os.environ["POSITION_SIZING_MODE"], "atr_risk")
-            self.assertEqual(os.environ["ATR_RISK_PER_TRADE_PCT"], "0.0075")
-            self.assertEqual(os.environ["TARGET_POSITION_NOTIONAL_PCT"], "0.30")
-            self.assertEqual(os.environ["MAX_POSITION_NOTIONAL_PCT"], "0.35")
-            self.assertEqual(os.environ["MAX_DAILY_LOSS"], "3")
-            self.assertEqual(os.environ["MAX_CONSECUTIVE_LOSSES"], "2")
-            self.assertEqual(os.environ["MAX_TRADES_PER_DAY"], "3")
+            self.assertEqual(os.environ["POSITION_SIZING_MODE"], "notional_cap")
+            self.assertEqual(os.environ["TARGET_POSITION_NOTIONAL_PCT"], "0.90")
+            self.assertEqual(os.environ["MAX_POSITION_NOTIONAL_PCT"], "0.95")
+            self.assertEqual(os.environ["MAX_DAILY_LOSS"], "6")
+            self.assertEqual(os.environ["MAX_CONSECUTIVE_LOSSES"], "3")
+            self.assertEqual(os.environ["MAX_TRADES_PER_DAY"], "2")
             self.assertIn("live_btc", str(paths_module.DATA_DIR))
         finally:
             os.environ.clear()
@@ -102,8 +101,8 @@ class ProfileTests(unittest.TestCase):
         try:
             resolved = validate_profile_env("live", "btc")
             self.assertEqual(resolved["SYMBOL"], "BTC/USD")
-            self.assertEqual(resolved["MAX_DAILY_LOSS"], "3")
-            self.assertEqual(resolved["MAX_TRADES_PER_DAY"], "3")
+            self.assertEqual(resolved["MAX_DAILY_LOSS"], "6")
+            self.assertEqual(resolved["MAX_TRADES_PER_DAY"], "2")
         finally:
             os.environ.clear()
             os.environ.update(original)
@@ -199,12 +198,55 @@ class ProfileTests(unittest.TestCase):
             load_profile("live", "btc")
             self.assertEqual(os.environ["SYMBOL"], "BTC/USD")
             self.assertEqual(os.environ["IS_CRYPTO"], "true")
-            self.assertEqual(os.environ["POSITION_SIZING_MODE"], "atr_risk")
+            self.assertEqual(os.environ["POSITION_SIZING_MODE"], "notional_cap")
             self.assertEqual(os.environ["ENABLE_STALE_BAR_CHECK"], "true")
             self.assertIn("live_btc", os.environ["BOT_DATA_DIR"])
         finally:
             os.environ.clear()
             os.environ.update(original)
+
+    def test_profile_env_symbol_and_session_flags_win_over_market_defaults(self):
+        original = dict(os.environ)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "config").mkdir(parents=True, exist_ok=True)
+            (root / ".env").write_text("SYMBOL=SPY\n", encoding="utf-8")
+            (root / "config" / "live_spy.env").write_text(
+                "SYMBOL=QQQ\n"
+                "IS_CRYPTO=false\n"
+                "ALLOW_OVERNIGHT_HOLDING=true\n"
+                "FLATTEN_BEFORE_CLOSE_MINUTES=0\n",
+                encoding="utf-8",
+            )
+            try:
+                for key in ("SYMBOL", "IS_CRYPTO", "ALLOW_OVERNIGHT_HOLDING", "FLATTEN_BEFORE_CLOSE_MINUTES"):
+                    os.environ.pop(key, None)
+                with patch.object(profile_module, "APP_ROOT", root):
+                    load_profile("live", "spy")
+                self.assertEqual(os.environ["SYMBOL"], "QQQ")
+                self.assertEqual(os.environ["ALLOW_OVERNIGHT_HOLDING"], "true")
+                self.assertEqual(os.environ["FLATTEN_BEFORE_CLOSE_MINUTES"], "0")
+            finally:
+                os.environ.clear()
+                os.environ.update(original)
+
+    def test_market_defaults_still_fill_gaps_when_profile_env_omits_them(self):
+        original = dict(os.environ)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "config").mkdir(parents=True, exist_ok=True)
+            (root / "config" / "live_spy.env").write_text("MAX_DAILY_LOSS=5\n", encoding="utf-8")
+            try:
+                for key in ("SYMBOL", "IS_CRYPTO", "ALLOW_OVERNIGHT_HOLDING", "FLATTEN_BEFORE_CLOSE_MINUTES"):
+                    os.environ.pop(key, None)
+                with patch.object(profile_module, "APP_ROOT", root):
+                    load_profile("live", "spy")
+                self.assertEqual(os.environ["SYMBOL"], "SPY")
+                self.assertEqual(os.environ["ALLOW_OVERNIGHT_HOLDING"], "false")
+                self.assertEqual(os.environ["FLATTEN_BEFORE_CLOSE_MINUTES"], "5")
+            finally:
+                os.environ.clear()
+                os.environ.update(original)
 
     def test_live_btc_safety_defaults_apply_when_profile_env_file_is_missing(self):
         original = dict(os.environ)

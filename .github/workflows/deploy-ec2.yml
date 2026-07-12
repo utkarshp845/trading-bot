@@ -37,7 +37,7 @@ jobs:
       EC2_PORT: ${{ vars.EC2_PORT != '' && vars.EC2_PORT || '22' }}
       EC2_APP_DIR: ${{ vars.EC2_APP_DIR != '' && vars.EC2_APP_DIR || '/home/ubuntu/trading-bot' }}
       DEPLOY_PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.profile || 'live' }}
-      DEPLOY_MARKET: btc
+      DEPLOY_MARKET: spy
       INSTALL_CRON: ${{ github.event_name == 'workflow_dispatch' && inputs.install_cron || 'true' }}
     steps:
       - name: Check out repository
