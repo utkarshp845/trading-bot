@@ -5,7 +5,7 @@ set -Eeuo pipefail
 profile="${1:-live}"
 app_dir="${2:-${APP_DIR:-/opt/trading-bot/app}}"
 cron_tz="${CRON_TZ:-America/New_York}"
-schedule="${CRON_SCHEDULE:-*/5 * * * *}"
+schedule="${CRON_SCHEDULE:-5 * * * *}"
 docker_bin="${DOCKER_BIN:-$(command -v docker || true)}"
 job_marker="# trading-bot-${profile}"
 

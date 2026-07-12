@@ -1,6 +1,6 @@
 # Trading Bot
 
-Trend-following trading bot for Alpaca, supporting both intraday equities (SPY) and 24/7 crypto (BTC/USD). Uses a trend-confirmed moving-average strategy with ADX, ATR, volume, momentum, and regime filters, layered risk controls, and multiple exit mechanisms.
+Trend-following trading bot for Alpaca. The default live/paper deployment is an hourly QQQ trend strategy sized for a small account; a defensive BTC/USD profile is also available. Uses a trend-confirmed moving-average strategy with ADX, ATR, volume, momentum, and regime filters, layered risk controls, and multiple exit mechanisms.
 
 It currently:
 
@@ -133,7 +133,7 @@ Run the walk-forward optimizer:
 docker compose run --rm optimize
 ```
 
-Direct BTC live tuning equivalent:
+BTC equivalent:
 
 ```powershell
 python -m bot.profile_runner live optimize btc
@@ -156,88 +156,35 @@ Main outputs:
 - `reports/optimize_latest.md`
 - `reports/optimize_latest.json`
 
-For BTC live tuning, the optimizer compares candidates against the loaded live baseline over the same bars. A candidate is marked accepted only if it clears the full replay, walk-forward, baseline-improvement, and 2x-slippage checks in the report.
+The optimizer compares candidates against the loaded live baseline over the same bars, for either market. A candidate is marked accepted only if it clears the full replay, walk-forward, baseline-improvement, and 2x-slippage checks in the report.
 
 ## Deployment
 
-The bot can be deployed to AWS EC2 using GitHub Actions.
+The bot deploys to a plain EC2 instance via GitHub Actions: the workflow at
+`.github/workflows/deploy-ec2.yml` rsyncs the repo over SSH, builds the
+Docker image on the instance, and installs a cron job — no container
+registry or AWS IAM setup involved. Full setup steps, required secrets, and
+verification commands are in `docs/github_actions_ec2.md`.
 
-### Prerequisites
-
-1. AWS EC2 instance with Docker installed
-2. AWS ECR repository for the Docker images
-3. IAM user with ECR and EC2 access
-4. SSH key pair for EC2 access
-
-### Setup
-
-1. **Create AWS ECR Repository:**
-   ```bash
-   aws ecr create-repository --repository-name trading-bot --region your-region
-   ```
-
-2. **Configure GitHub Secrets:**
-   Add the following secrets to your GitHub repository:
-   - `AWS_ACCESS_KEY_ID`: Your AWS access key
-   - `AWS_SECRET_ACCESS_KEY`: Your AWS secret key
-   - `AWS_ACCOUNT_ID`: Your AWS account ID
-   - `AWS_REGION`: AWS region (e.g., us-east-1)
-   - `EC2_HOST`: EC2 instance public IP or DNS
-   - `EC2_USER`: SSH username (usually 'ec2-user' or 'ubuntu')
-   - `EC2_SSH_KEY`: Private SSH key for EC2 access
-
-4. **Setup EC2 Instance:**
-   - Install Docker and AWS CLI
-   - Configure AWS CLI with credentials that have ECR pull permissions
-   - Clone your repository
-   - Copy `.env` file with your Alpaca credentials to the project directory
-   - Ensure the data, logs, and reports directories exist and are writable
-   - Make sure Docker daemon is running
-   - **Set up cron job for periodic execution:**
-     ```bash
-     # Edit crontab
-     crontab -e
-     
-     # Add line to run every 5 minutes during market hours (9:30 AM - 4:00 PM ET, Monday-Friday)
-     # Note: Adjust timezone as needed
-     */5 9-15 * * 1-5 docker run --rm --env-file /path/to/trading-bot/.env -v /path/to/trading-bot/data:/app/data -v /path/to/trading-bot/logs:/app/logs -v /path/to/trading-bot/reports:/app/reports trading-bot:latest
-     ```
-     
-     Or create a simple run script:
-     ```bash
-     #!/bin/bash
-     docker run --rm \
-       --env-file .env \
-       -v $(pwd)/data:/app/data \
-       -v $(pwd)/logs:/app/logs \
-       -v $(pwd)/reports:/app/reports \
-       trading-bot:latest
-     ```
-     
-     Use the provided `run.sh` script for this purpose.
-
-5. **Manual Deployment:**
-   ```bash
-   # On EC2 instance
-   ./deploy.sh
-   ```
-
-### Automatic Deployment
-
-Push to the `main` branch to trigger automatic deployment via GitHub Actions.
+It triggers automatically on pushes to `master`, or manually from the
+Actions tab with a chosen profile (`live`/`paper`) and market
+(`spy`/`btc`, defaults to `spy`).
 
 ### Security Notes
 
-- Use IAM roles on EC2 instead of access keys when possible
 - Restrict EC2 security groups to only allow SSH from your IP
 - Generate a dedicated SSH key pair for deployment
-- Store sensitive credentials only in GitHub secrets and the .env file on EC2
+- Store sensitive credentials only in GitHub secrets and the `.env` file on EC2
 - Regularly rotate API keys and SSH keys
 
+## Project Structure
+
 - `bot/` - trading logic, broker integration, storage, reporting
+- `config/` - per-profile env files (`live_spy`, `paper_spy`, `live_btc`, `paper_btc`)
 - `data/` - SQLite database
 - `logs/` - runtime logs and CSV snapshots
 - `reports/` - generated reports
+- `docs/` - strategy audits, build log, and deployment guides
 
 ## Risk Controls
 
@@ -250,7 +197,7 @@ The bot has multiple independent safety layers:
 | Breakeven stop | `ENABLE_BREAKEVEN_STOP` | false |
 | Profit lock | `ENABLE_PROFIT_LOCK` | false |
 | Time-based stop | `MAX_BARS_IN_TRADE` | 12 bars |
-| Trend reversal exit | `REVERSAL_SIGNAL_STRENGTH_MIN` | 35 |
+| Regime-invalidation exit | `EXIT_ON_REGIME_INVALIDATION` | true |
 | Daily drawdown halt | `MAX_DAILY_DRAWDOWN_PCT` | 1% |
 | Dollar loss cap | `MAX_DAILY_LOSS` | disabled |
 | Consecutive loss halt | `MAX_CONSECUTIVE_LOSSES` | 3 |
@@ -266,7 +213,7 @@ Set `IS_CRYPTO=true` (or use `config/paper_btc.env` / `config/live_btc.env`) to 
 - Bypasses NYSE market-hours check — trades 24/7
 - Orders use `TimeInForce.GTC` instead of `DAY`
 - Position sizing returns fractional quantities (e.g. `0.0005 BTC`)
-- Cron schedule should run every 5 minutes around the clock
+- Trades hourly bars like the equity profile; cron runs once an hour around the clock (see `docs/github_actions_ec2.md`)
 
 Important for small accounts: Alpaca crypto costs ~0.25% taker fee + spread per
 side (~0.6% per round trip). Replay evidence in `docs/strategy_revamp_2026-07.md`
@@ -279,19 +226,22 @@ profile for growth.
 
 ## Small Equity Accounts
 
-For a roughly `$150` SPY account, one whole SPY share is too large. Use `config/live_spy.env` or set:
+For a roughly `$150` account, one whole share of most ETFs is too large a
+chunk of the account to size or diversify sensibly. `config/live_spy.env`
+(despite the filename, it trades `QQQ`) already sets this up:
 
 - `ALLOW_FRACTIONAL_EQUITIES=true`
 - `ALLOW_SHORTS=false`
-- `POSITION_SIZING_MODE=atr_risk`
-- `MAX_POSITION_NOTIONAL_PCT` and `TARGET_POSITION_NOTIONAL_PCT` high enough to create a real fractional order, but low enough to cap exposure
+- `POSITION_SIZING_MODE=notional_cap` with `TARGET_POSITION_NOTIONAL_PCT=0.90` — near-full-notional single positions, since a $150 account can't usefully diversify anyway
+- `MAX_POSITION_NOTIONAL_PCT` above the target as a hard ceiling
 
 ## Notes
 
 - Keep real API keys only in your local `.env` — never commit them.
-- By default, the bot behaves as an intraday system: it flattens inherited overnight positions on the next session and exits before market close. Set `ALLOW_OVERNIGHT_HOLDING=true` and `FLATTEN_BEFORE_CLOSE_MINUTES=0` for crypto.
-- The SPY runners write to `runtime/paper` and `runtime/live`; BTC runners write to `runtime/paper_btc` and `runtime/live_btc`.
+- Without a profile, the raw `bot.main` default is an intraday equity system: it flattens inherited overnight positions on the next session and exits before market close. Both shipped profiles override this — `config/live_spy.env` and `config/live_btc.env` both set `ALLOW_OVERNIGHT_HOLDING=true` and `FLATTEN_BEFORE_CLOSE_MINUTES=0`, since the current strategy is a multi-day trend hold, not an intraday one.
+- The `spy`-market runners write to `runtime/paper` and `runtime/live`; `btc`-market runners write to `runtime/paper_btc` and `runtime/live_btc`.
 - Use the optimizer to rank parameter sets on walk-forward windows before going live.
 - `OPERATIONS.md` has day-to-day commands.
 - `docs/github_actions_ec2.md` covers the GitHub Actions EC2 deployment path.
+- `docs/BUILD_LOG.md` tracks strategy and infrastructure changes over time.
 - Run `scripts/validate.ps1` (Windows) or `scripts/validate.sh` (Unix) for a full local validation pass.
