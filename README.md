@@ -51,26 +51,32 @@ Pre-built configs live in `config/`:
 
 | File | Symbol | Use |
 |---|---|---|
-| `config/paper_spy.env` | SPY | Paper trading equities |
-| `config/live_spy.env` | SPY | Small-account live equities, fractional and long-only |
-| `config/paper_btc.env` | BTC/USD | Paper trading Bitcoin (24/7, fractional) |
-| `config/live_btc.env` | BTC/USD | Live trading Bitcoin (24/7, fractional) |
+| `config/paper_spy.env` | QQQ | Paper trading equities (hourly trend, multi-day holds) |
+| `config/live_spy.env` | QQQ | Small-account live equities — the recommended live profile |
+| `config/paper_btc.env` | BTC/USD | Paper trading Bitcoin (defensive uptrend-only) |
+| `config/live_btc.env` | BTC/USD | Live Bitcoin — defensive, dormant outside confirmed uptrends |
+
+See `docs/strategy_revamp_2026-07.md` for the replay evidence behind these profiles.
 
 Load a profile by setting `BOT_PROFILE` / `BOT_MARKET`, by sourcing the file before running, or with the profile runner:
 
 ```powershell
-python -m bot.profile_runner paper trade btc
-python -m bot.profile_runner live trade btc
+python -m bot.profile_runner paper trade spy
+python -m bot.profile_runner live trade spy
 ```
 
 ## Run
 
 ```bash
-# Paper trade (BTC config, Alpaca paper account)
+# Paper trade (equity config, Alpaca paper account)
 docker compose run --rm paper
 
-# Live trade (BTC config, Alpaca live account)
+# Live trade (equity config, Alpaca live account)
 docker compose run --rm trade
+
+# BTC variants
+docker compose run --rm paper-btc
+docker compose run --rm trade-btc
 
 # Generate monitor report
 docker compose run --rm monitor
@@ -262,15 +268,14 @@ Set `IS_CRYPTO=true` (or use `config/paper_btc.env` / `config/live_btc.env`) to 
 - Position sizing returns fractional quantities (e.g. `0.0005 BTC`)
 - Cron schedule should run every 5 minutes around the clock
 
-For BTC with a small account, recommended settings (already in `config/paper_btc.env` and `config/live_btc.env`):
-- `POSITION_SIZING_MODE=atr_risk`
-- Live BTC: `ATR_RISK_PER_TRADE_PCT=0.0075`, `MAX_POSITION_NOTIONAL_PCT=0.35`, `TARGET_POSITION_NOTIONAL_PCT=0.30`, `MAX_TRADES_PER_DAY=3`
-- Paper BTC: larger rehearsal sizing in `config/paper_btc.env`
-- `HARD_STOP_ATR_MULT=2.0`
-- `TRAIL_ATR_MULTIPLIER=2.0` (BTC needs more room than equities)
-- `MAX_DAILY_LOSS=3` for the live BTC profile
-- `TREND_EMA_PERIOD=55` with minimum EMA-distance confirmation to filter weak mean-reversion noise
-- `MOMENTUM_LOOKBACK_BARS=3` to prefer continuation entries over flat crossovers
+Important for small accounts: Alpaca crypto costs ~0.25% taker fee + spread per
+side (~0.6% per round trip). Replay evidence in `docs/strategy_revamp_2026-07.md`
+shows that at ~$150 of equity this friction exceeds any repeatable intraday
+edge — every high-frequency BTC variant tested lost money after fees. The
+shipped BTC profiles are therefore deliberately defensive: hourly bars, a
+strict 4h uptrend regime gate, near-full-notional single positions, and wide
+trailing exits. Expect them to be dormant in downtrends. Prefer the equity
+profile for growth.
 
 ## Small Equity Accounts
 
