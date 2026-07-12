@@ -1,6 +1,11 @@
 .env
 .env.paper
 .env.live
+*.pem
+*.key
+*.pfx
+id_rsa*
+id_ed25519*
 __pycache__/
 *.pyc
 data/
@@ -12,3 +17,5 @@ runtime/
 .DS_Store
 .claude/
 .pytest_cache/
+venv/
+.venv/
