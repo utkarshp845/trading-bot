@@ -8,35 +8,51 @@ x-bot: &bot
 services:
   trade:
     <<: *bot
-    command: ["python", "-m", "bot.profile_runner", "live", "trade", "btc"]
+    command: ["python", "-m", "bot.profile_runner", "live", "trade", "spy"]
 
   paper:
+    <<: *bot
+    command: ["python", "-m", "bot.profile_runner", "paper", "trade", "spy"]
+
+  trade-btc:
+    <<: *bot
+    command: ["python", "-m", "bot.profile_runner", "live", "trade", "btc"]
+
+  paper-btc:
     <<: *bot
     command: ["python", "-m", "bot.profile_runner", "paper", "trade", "btc"]
 
   monitor:
     <<: *bot
-    command: ["python", "-m", "bot.profile_runner", "live", "monitor", "btc"]
+    command: ["python", "-m", "bot.profile_runner", "live", "monitor", "spy"]
 
   live-monitor:
     <<: *bot
-    command: ["python", "-m", "bot.profile_runner", "live", "monitor", "btc"]
+    command: ["python", "-m", "bot.profile_runner", "live", "monitor", "spy"]
 
   paper-monitor:
     <<: *bot
-    command: ["python", "-m", "bot.profile_runner", "paper", "monitor", "btc"]
+    command: ["python", "-m", "bot.profile_runner", "paper", "monitor", "spy"]
+
+  btc-monitor:
+    <<: *bot
+    command: ["python", "-m", "bot.profile_runner", "live", "monitor", "btc"]
 
   research:
+    <<: *bot
+    command: ["python", "-m", "bot.profile_runner", "live", "research", "spy"]
+
+  research-btc:
     <<: *bot
     command: ["python", "-m", "bot.profile_runner", "live", "research", "btc"]
 
   optimize:
     <<: *bot
-    command: ["python", "-m", "bot.profile_runner", "live", "optimize", "btc"]
+    command: ["python", "-m", "bot.profile_runner", "live", "optimize", "spy"]
 
   live-optimize:
     <<: *bot
-    command: ["python", "-m", "bot.profile_runner", "live", "optimize", "btc"]
+    command: ["python", "-m", "bot.profile_runner", "live", "optimize", "spy"]
 
   validate:
     build: .

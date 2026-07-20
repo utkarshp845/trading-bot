@@ -7,7 +7,7 @@ app_dir="${APP_DIR:-$(pwd)}"
 install_cron="${INSTALL_CRON:-true}"
 run_after_deploy="${RUN_AFTER_DEPLOY:-true}"
 docker_bin="${DOCKER_BIN:-$(command -v docker || true)}"
-market="${DEPLOY_MARKET:-btc}"
+market="${DEPLOY_MARKET:-spy}"
 
 case "$profile" in
   live|paper) ;;

@@ -121,6 +121,9 @@ def sync_replay_day(state: ReplayState, ts, equity: float) -> None:
         state.trading_day = current_day
         state.trades_today = 0
         state.daily_start_equity = equity
+        # Match live behavior: store.get_state resets the loss streak on ET day
+        # rollover, so replays must too or they lock out entries permanently.
+        state.consecutive_losses = 0
 
     current_day_utc = trading_day_utc(ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts)
     if state.entry_failures_day_utc != current_day_utc:

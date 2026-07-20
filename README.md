@@ -1,6 +1,43 @@
 # Trading Bot
 
-Trend-following trading bot for Alpaca, supporting both intraday equities (SPY) and 24/7 crypto (BTC/USD). Uses a trend-confirmed moving-average strategy with ADX, ATR, volume, momentum, and regime filters, layered risk controls, and multiple exit mechanisms.
+[![CI](https://github.com/utkarshp845/trading-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/utkarshp845/trading-bot/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)
+
+A systematic trading bot for Alpaca, built and run against a real ~$150 live
+account. This repo is as much a record of the mistakes and the evidence that
+corrected them as it is working code — see [What I've Learned](#what-ive-learned)
+before the code itself.
+
+**Not financial advice.** This is a personal project for learning and
+experimentation with a small amount of real money. Nothing here is a
+recommendation to trade, and past replay/backtest performance does not
+predict future results. See [Disclaimer](#disclaimer).
+
+## Contents
+
+- [What This Is](#what-this-is)
+- [What I've Learned](#what-ives-learned)
+- [Current Strategy & Results](#current-strategy--results)
+- [How It Works](#how-it-works)
+- [What It Uses](#what-it-uses)
+- [Setup](#setup)
+- [Profiles](#profiles)
+- [Run / Validate / Monitor](#run)
+- [Deployment](#deployment)
+- [Risk Controls](#risk-controls)
+- [Crypto (BTC/USD)](#crypto-btcusd)
+- [Small Equity Accounts](#small-equity-accounts)
+- [Docs](#docs)
+- [Disclaimer](#disclaimer)
+
+## What This Is
+
+A trend-following bot that pulls bars from Alpaca, evaluates a rules-based
+signal (moving averages, ADX, ATR, volume, and a higher-timeframe regime
+filter), sizes and places orders through Alpaca's API, and tracks everything
+— fills, P&L, risk-limit hits, rejection reasons — in SQLite so it can be
+audited after the fact instead of trusted blindly.
 
 It currently:
 
@@ -11,12 +48,88 @@ It currently:
 - records runs, orders, events, and closed trades in SQLite
 - writes daily and monitoring reports to `reports/`
 
+## What I've Learned
+
+The interesting part of this project isn't the code, it's what running it
+live with real (small) money exposed:
+
+- **A strategy that looks reasonable on paper can be structurally unable to
+  make money at a given account size.** The original live setup traded
+  BTC/USD on 5-minute bars with $150 of capital. Over 120 days it made
+  exactly 2 trades — the entry filter stack required ~14 conditions to align
+  at once. Position sizes were capped around $45, and Alpaca's crypto
+  round-trip friction (~0.6%, taker fee + spread) was often larger than the
+  trade's entire expected profit. It wasn't unlucky — it was unwinnable by
+  construction.
+- **"Trade more, smaller" made it worse, not better — I tested it instead of
+  assuming.** A loosened, higher-frequency BTC variant made 184 trades over a
+  year and lost $95, of which ~$99 was pure fee friction. On a small crypto
+  account, activity itself is the cost. This only became obvious by replaying
+  it against real historical data rather than reasoning about it in the
+  abstract.
+- **The venue mattered more than the signal.** The same trend logic, run on
+  equities (near-zero commission) instead of crypto (~0.6% round trip),
+  turned from a loser into a net-positive strategy in replay — without
+  changing the core idea, just the friction it had to overcome.
+- **Backtests can lie quietly through infrastructure bugs, not just overfitting.**
+  While diagnosing this, I found the replay harness never reset its
+  consecutive-loss counter on day rollover the way the live code does — so
+  any backtest that hit its loss-streak limit silently stopped trading for
+  the rest of the test period. Every prior research report in this repo was
+  undercounting trades because of it. Fixed in
+  [`bot/trade_controls.py`](bot/trade_controls.py); full writeup in
+  [`docs/BUILD_LOG.md`](docs/BUILD_LOG.md).
+- **Cron intervals need to match the strategy's timeframe, not just "run
+  often."** Moving from 5-minute to hourly bars and leaving the deploy cron
+  at every 5 minutes would have meant ~12x redundant invocations per hour —
+  harmless (guarded by cooldown checks) but a real signal that deploy
+  config and strategy config can silently drift apart if nobody checks.
+
+Full investigation with numbers: [`docs/strategy_revamp_2026-07.md`](docs/strategy_revamp_2026-07.md).
+Change-by-change history: [`docs/BUILD_LOG.md`](docs/BUILD_LOG.md).
+
+## Current Strategy & Results
+
+The default live/paper deployment is an **hourly QQQ trend-following
+strategy** sized for a small account: long-only, fractional, ~90% notional
+per position, a daily-EMA regime filter, and wide trailing exits that hold
+winning trends for days rather than minutes. A defensive BTC/USD profile is
+also available — it only trades confirmed multi-hour uptrends and is
+designed to sit out downtrends entirely rather than force trades.
+
+Replay results, `$150` starting capital, real historical bars, realistic
+slippage assumptions (see the strategy doc for methodology — **these are
+backtest results, not live account performance**):
+
+| Profile | Period | Net P&L | Profit Factor | Max Drawdown | Trades |
+|---|---|---|---|---|---|
+| QQQ hourly trend (live default) | 2023-08 → 2026-07 (~3 yrs) | +$55.3 (+37%) | 1.76 | 6.7% | 74 (~2/mo) |
+| BTC hourly, strict uptrend gate | 2025-26 (bear year, BTC −46%) | $0.00 | — | 0% | 0 (stayed flat) |
+| BTC hourly, strict uptrend gate | 2024-25 (bull year) | +$3.1 | 1.14 | 10.6% | 12 |
+| *(retired)* BTC 5m scalp, live config | 2026-03 → 2026-07 (real bars) | −$0.85 | 0.0 | 0.6% | 2 |
+
+## How It Works
+
+```
+Alpaca bars → indicators (SMA/EMA/ADX/ATR/volume) → regime filter (higher timeframe)
+           → signal (LONG/HOLD) → risk gate (drawdown, loss streak, cooldown, staleness)
+           → position sizing → order submission → SQLite (runs, orders, closed trades, events)
+           → reports (daily / monitor / research / optimize)
+```
+
+- **Signal:** [`bot/strategy_ma.py`](bot/strategy_ma.py) — SMA trend cross confirmed by ADX, ATR-bounded volatility, a trend EMA, and a higher-timeframe regime filter (e.g. daily EMA for the equity profile).
+- **Risk:** [`bot/risk.py`](bot/risk.py), [`bot/trade_controls.py`](bot/trade_controls.py) — daily drawdown/loss caps, consecutive-loss halt, entry cooldown, stale-data rejection, position-notional caps.
+- **Execution:** [`bot/broker_alpaca.py`](bot/broker_alpaca.py), [`bot/main.py`](bot/main.py) — order submission, fill reconciliation, broker position sync.
+- **Persistence:** [`bot/store.py`](bot/store.py) — SQLite schema for runs, orders, position state, closed trades, and events, so every decision (including ones that resulted in *no* trade) is auditable later.
+- **Research:** [`bot/research.py`](bot/research.py), [`bot/optimize_strategy.py`](bot/optimize_strategy.py) — replay/backtest harness and walk-forward parameter search, used to generate the results above.
+
 ## What It Uses
 
 - Python 3.11
-- Alpaca API
+- Alpaca API (`alpaca-py`)
 - SQLite
 - Docker / Docker Compose
+- GitHub Actions (CI + EC2 deploy)
 
 ## Setup
 
@@ -45,22 +158,28 @@ Key env values:
 | `ALLOW_OVERNIGHT_HOLDING` | `false` | Keep positions overnight (set `true` for crypto) |
 | `FLATTEN_BEFORE_CLOSE_MINUTES` | `5` | Force flat this many minutes before 4 PM ET (set `0` for crypto) |
 
+These are the raw code-level defaults (used only if you run `bot.main`
+directly without a profile). Every shipped profile in `config/` overrides
+the relevant ones — see [Profiles](#profiles).
+
 ## Profiles
 
 Pre-built configs live in `config/`:
 
 | File | Symbol | Use |
 |---|---|---|
-| `config/paper_spy.env` | SPY | Paper trading equities |
-| `config/live_spy.env` | SPY | Small-account live equities, fractional and long-only |
-| `config/paper_btc.env` | BTC/USD | Paper trading Bitcoin (24/7, fractional) |
-| `config/live_btc.env` | BTC/USD | Live trading Bitcoin (24/7, fractional) |
+| `config/paper_spy.env` | QQQ | Paper trading equities (hourly trend, multi-day holds) |
+| `config/live_spy.env` | QQQ | Small-account live equities — the recommended live profile |
+| `config/paper_btc.env` | BTC/USD | Paper trading Bitcoin (defensive uptrend-only) |
+| `config/live_btc.env` | BTC/USD | Live Bitcoin — defensive, dormant outside confirmed uptrends |
+
+See `docs/strategy_revamp_2026-07.md` for the replay evidence behind these profiles.
 
 Load a profile by setting `BOT_PROFILE` / `BOT_MARKET`, by sourcing the file before running, or with the profile runner:
 
 ```powershell
-python -m bot.profile_runner paper trade btc
-python -m bot.profile_runner live trade btc
+python -m bot.profile_runner paper trade spy
+python -m bot.profile_runner live trade spy
 ```
 
 Before relying on a schedule, verify both the paper account and market-data feed (this never places an order):
@@ -74,11 +193,15 @@ The BTC paper profile is an exploration profile: it permits up to 8 entries per 
 ## Run
 
 ```bash
-# Paper trade (BTC config, Alpaca paper account)
+# Paper trade (equity config, Alpaca paper account)
 docker compose run --rm paper
 
-# Live trade (BTC config, Alpaca live account)
+# Live trade (equity config, Alpaca live account)
 docker compose run --rm trade
+
+# BTC variants
+docker compose run --rm paper-btc
+docker compose run --rm trade-btc
 
 # Generate monitor report
 docker compose run --rm monitor
@@ -135,7 +258,7 @@ Run the walk-forward optimizer:
 docker compose run --rm optimize
 ```
 
-Direct BTC live tuning equivalent:
+BTC equivalent:
 
 ```powershell
 python -m bot.profile_runner live optimize btc
@@ -158,88 +281,36 @@ Main outputs:
 - `reports/optimize_latest.md`
 - `reports/optimize_latest.json`
 
-For BTC live tuning, the optimizer compares candidates against the loaded live baseline over the same bars. A candidate is marked accepted only if it clears the full replay, walk-forward, baseline-improvement, and 2x-slippage checks in the report.
+The optimizer compares candidates against the loaded live baseline over the same bars, for either market. A candidate is marked accepted only if it clears the full replay, walk-forward, baseline-improvement, and 2x-slippage checks in the report.
 
 ## Deployment
 
-The bot can be deployed to AWS EC2 using GitHub Actions.
+The bot deploys to a plain EC2 instance via GitHub Actions: the workflow at
+`.github/workflows/deploy-ec2.yml` rsyncs the repo over SSH, builds the
+Docker image on the instance, and installs a cron job — no container
+registry or AWS IAM setup involved. Full setup steps, required secrets, and
+verification commands are in `docs/github_actions_ec2.md`.
 
-### Prerequisites
-
-1. AWS EC2 instance with Docker installed
-2. AWS ECR repository for the Docker images
-3. IAM user with ECR and EC2 access
-4. SSH key pair for EC2 access
-
-### Setup
-
-1. **Create AWS ECR Repository:**
-   ```bash
-   aws ecr create-repository --repository-name trading-bot --region your-region
-   ```
-
-2. **Configure GitHub Secrets:**
-   Add the following secrets to your GitHub repository:
-   - `AWS_ACCESS_KEY_ID`: Your AWS access key
-   - `AWS_SECRET_ACCESS_KEY`: Your AWS secret key
-   - `AWS_ACCOUNT_ID`: Your AWS account ID
-   - `AWS_REGION`: AWS region (e.g., us-east-1)
-   - `EC2_HOST`: EC2 instance public IP or DNS
-   - `EC2_USER`: SSH username (usually 'ec2-user' or 'ubuntu')
-   - `EC2_SSH_KEY`: Private SSH key for EC2 access
-
-4. **Setup EC2 Instance:**
-   - Install Docker and AWS CLI
-   - Configure AWS CLI with credentials that have ECR pull permissions
-   - Clone your repository
-   - Copy `.env` file with your Alpaca credentials to the project directory
-   - Ensure the data, logs, and reports directories exist and are writable
-   - Make sure Docker daemon is running
-   - **Set up cron job for periodic execution:**
-     ```bash
-     # Edit crontab
-     crontab -e
-     
-     # Add line to run every 5 minutes during market hours (9:30 AM - 4:00 PM ET, Monday-Friday)
-     # Note: Adjust timezone as needed
-     */5 9-15 * * 1-5 docker run --rm --env-file /path/to/trading-bot/.env -v /path/to/trading-bot/data:/app/data -v /path/to/trading-bot/logs:/app/logs -v /path/to/trading-bot/reports:/app/reports trading-bot:latest
-     ```
-     
-     Or create a simple run script:
-     ```bash
-     #!/bin/bash
-     docker run --rm \
-       --env-file .env \
-       -v $(pwd)/data:/app/data \
-       -v $(pwd)/logs:/app/logs \
-       -v $(pwd)/reports:/app/reports \
-       trading-bot:latest
-     ```
-     
-     Use the provided `run.sh` script for this purpose.
-
-5. **Manual Deployment:**
-   ```bash
-   # On EC2 instance
-   ./deploy.sh
-   ```
-
-### Automatic Deployment
-
-Push to the `main` branch to trigger automatic deployment via GitHub Actions.
+It triggers automatically on pushes to `master`, or manually from the
+Actions tab with a chosen profile (`live`/`paper`) and market
+(`spy`/`btc`, defaults to `spy`).
 
 ### Security Notes
 
-- Use IAM roles on EC2 instead of access keys when possible
 - Restrict EC2 security groups to only allow SSH from your IP
 - Generate a dedicated SSH key pair for deployment
-- Store sensitive credentials only in GitHub secrets and the .env file on EC2
+- Store sensitive credentials only in GitHub secrets and the `.env` file on EC2
 - Regularly rotate API keys and SSH keys
+- Never commit `.env`, `.pem`, or any real API key — `.gitignore` blocks the common patterns, but double-check before pushing
+
+## Project Structure
 
 - `bot/` - trading logic, broker integration, storage, reporting
+- `config/` - per-profile env files (`live_spy`, `paper_spy`, `live_btc`, `paper_btc`)
 - `data/` - SQLite database
 - `logs/` - runtime logs and CSV snapshots
 - `reports/` - generated reports
+- `docs/` - strategy audits, build log, and deployment guides
 
 ## Risk Controls
 
@@ -252,7 +323,7 @@ The bot has multiple independent safety layers:
 | Breakeven stop | `ENABLE_BREAKEVEN_STOP` | false |
 | Profit lock | `ENABLE_PROFIT_LOCK` | false |
 | Time-based stop | `MAX_BARS_IN_TRADE` | 12 bars |
-| Trend reversal exit | `REVERSAL_SIGNAL_STRENGTH_MIN` | 35 |
+| Regime-invalidation exit | `EXIT_ON_REGIME_INVALIDATION` | true |
 | Daily drawdown halt | `MAX_DAILY_DRAWDOWN_PCT` | 1% |
 | Dollar loss cap | `MAX_DAILY_LOSS` | disabled |
 | Consecutive loss halt | `MAX_CONSECUTIVE_LOSSES` | 3 |
@@ -268,33 +339,51 @@ Set `IS_CRYPTO=true` (or use `config/paper_btc.env` / `config/live_btc.env`) to 
 - Bypasses NYSE market-hours check — trades 24/7
 - Orders use `TimeInForce.GTC` instead of `DAY`
 - Position sizing returns fractional quantities (e.g. `0.0005 BTC`)
-- Cron schedule should run every 5 minutes around the clock
+- Trades hourly bars like the equity profile; cron runs once an hour around the clock (see `docs/github_actions_ec2.md`)
 
-For BTC with a small account, recommended settings (already in `config/paper_btc.env` and `config/live_btc.env`):
-- `POSITION_SIZING_MODE=atr_risk`
-- Live BTC: `ATR_RISK_PER_TRADE_PCT=0.0075`, `MAX_POSITION_NOTIONAL_PCT=0.35`, `TARGET_POSITION_NOTIONAL_PCT=0.30`, `MAX_TRADES_PER_DAY=3`
-- Paper BTC: larger rehearsal sizing in `config/paper_btc.env`
-- `HARD_STOP_ATR_MULT=2.0`
-- `TRAIL_ATR_MULTIPLIER=2.0` (BTC needs more room than equities)
-- `MAX_DAILY_LOSS=3` for the live BTC profile
-- `TREND_EMA_PERIOD=55` with minimum EMA-distance confirmation to filter weak mean-reversion noise
-- `MOMENTUM_LOOKBACK_BARS=3` to prefer continuation entries over flat crossovers
+Important for small accounts: Alpaca crypto costs ~0.25% taker fee + spread per
+side (~0.6% per round trip). Replay evidence in `docs/strategy_revamp_2026-07.md`
+shows that at ~$150 of equity this friction exceeds any repeatable intraday
+edge — every high-frequency BTC variant tested lost money after fees. The
+shipped BTC profiles are therefore deliberately defensive: hourly bars, a
+strict 4h uptrend regime gate, near-full-notional single positions, and wide
+trailing exits. Expect them to be dormant in downtrends. Prefer the equity
+profile for growth.
 
 ## Small Equity Accounts
 
-For a roughly `$150` SPY account, one whole SPY share is too large. Use `config/live_spy.env` or set:
+For a roughly `$150` account, one whole share of most ETFs is too large a
+chunk of the account to size or diversify sensibly. `config/live_spy.env`
+(despite the filename, it trades `QQQ`) already sets this up:
 
 - `ALLOW_FRACTIONAL_EQUITIES=true`
 - `ALLOW_SHORTS=false`
-- `POSITION_SIZING_MODE=atr_risk`
-- `MAX_POSITION_NOTIONAL_PCT` and `TARGET_POSITION_NOTIONAL_PCT` high enough to create a real fractional order, but low enough to cap exposure
+- `POSITION_SIZING_MODE=notional_cap` with `TARGET_POSITION_NOTIONAL_PCT=0.90` — near-full-notional single positions, since a $150 account can't usefully diversify anyway
+- `MAX_POSITION_NOTIONAL_PCT` above the target as a hard ceiling
+
+## Docs
+
+- [`docs/strategy_revamp_2026-07.md`](docs/strategy_revamp_2026-07.md) — the investigation and evidence behind the current strategy
+- [`docs/BUILD_LOG.md`](docs/BUILD_LOG.md) — running log of strategy and infrastructure changes
+- [`docs/github_actions_ec2.md`](docs/github_actions_ec2.md) — EC2 deployment setup
+- [`OPERATIONS.md`](OPERATIONS.md) — day-to-day commands (run, monitor, research, optimize)
+- `docs/strategy_audit_current.md`, `docs/live_account_path_100usd.md` — earlier, now-superseded audits, kept as historical record
 
 ## Notes
 
 - Keep real API keys only in your local `.env` — never commit them.
-- By default, the bot behaves as an intraday system: it flattens inherited overnight positions on the next session and exits before market close. Set `ALLOW_OVERNIGHT_HOLDING=true` and `FLATTEN_BEFORE_CLOSE_MINUTES=0` for crypto.
-- The SPY runners write to `runtime/paper` and `runtime/live`; BTC runners write to `runtime/paper_btc` and `runtime/live_btc`.
+- Without a profile, the raw `bot.main` default is an intraday equity system: it flattens inherited overnight positions on the next session and exits before market close. Both shipped profiles override this — `config/live_spy.env` and `config/live_btc.env` both set `ALLOW_OVERNIGHT_HOLDING=true` and `FLATTEN_BEFORE_CLOSE_MINUTES=0`, since the current strategy is a multi-day trend hold, not an intraday one.
+- The `spy`-market runners write to `runtime/paper` and `runtime/live`; `btc`-market runners write to `runtime/paper_btc` and `runtime/live_btc`.
 - Use the optimizer to rank parameter sets on walk-forward windows before going live.
-- `OPERATIONS.md` has day-to-day commands.
-- `docs/github_actions_ec2.md` covers the GitHub Actions EC2 deployment path.
 - Run `scripts/validate.ps1` (Windows) or `scripts/validate.sh` (Unix) for a full local validation pass.
+
+## Disclaimer
+
+This is a personal, educational project. It is not investment advice, and
+nothing in this repository — including the replay results above — is a
+recommendation to buy, sell, or hold any security or asset. Backtest and
+replay performance do not guarantee future results; they use simplified
+fill/slippage assumptions and a limited historical window. Trading involves
+risk of loss, including total loss of capital. The author is not a
+registered investment advisor. Use at your own risk, and never trade with
+money you cannot afford to lose.

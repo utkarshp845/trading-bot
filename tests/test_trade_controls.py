@@ -79,6 +79,26 @@ class TradeControlsTests(unittest.TestCase):
         self.assertEqual(state.trades_today, 0)
         self.assertEqual(state.daily_start_equity, 99500)
 
+    def test_sync_replay_day_resets_loss_streak_on_new_day_like_live_store(self):
+        state = ReplayState(
+            trades_today=3,
+            consecutive_losses=5,
+            daily_start_equity=100000,
+            trading_day="2026-03-31",
+        )
+        sync_replay_day(state, datetime(2026, 4, 1, 13, 30, tzinfo=UTC), 99500)
+        self.assertEqual(state.consecutive_losses, 0)
+
+    def test_sync_replay_day_keeps_loss_streak_within_same_day(self):
+        state = ReplayState(
+            trades_today=1,
+            consecutive_losses=2,
+            daily_start_equity=100000,
+            trading_day="2026-03-31",
+        )
+        sync_replay_day(state, datetime(2026, 3, 31, 18, 30, tzinfo=UTC), 99500)
+        self.assertEqual(state.consecutive_losses, 2)
+
     def test_replay_entry_blocks_after_max_entry_failures(self):
         bars = self._bars()
         state = ReplayState(
