@@ -133,6 +133,22 @@ python -m bot.profile_runner live validate btc
 python -m bot.profile_runner live validate spy
 ```
 
+Validate actual paper broker and market-data access without placing an order:
+
+```bash
+python -m bot.profile_runner paper connectivity btc
+```
+
+EC2 deployment runs this connectivity check before installing cron. Invalid or expired credentials therefore fail deployment instead of producing a validation-only database that looks healthy.
+
+The paper BTC cron installation creates three jobs by default:
+
+- trading cycle every 5 minutes
+- monitor report hourly at minute 17
+- research replay daily at 00:42 ET
+
+Override these with `CRON_SCHEDULE`, `MONITOR_CRON_SCHEDULE`, and `RESEARCH_CRON_SCHEDULE` when installing cron.
+
 Current runtime defaults:
 
 - entry stale-bar blocking is disabled unless `ENABLE_STALE_BAR_CHECK=1`

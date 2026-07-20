@@ -57,6 +57,11 @@ class ProfileTests(unittest.TestCase):
             self.assertEqual(os.environ["IS_CRYPTO"], "true")
             self.assertEqual(os.environ["ALLOW_OVERNIGHT_HOLDING"], "true")
             self.assertEqual(os.environ["FLATTEN_BEFORE_CLOSE_MINUTES"], "0")
+            self.assertEqual(os.environ["STRATEGY_VERSION"], "v3-paper-btc-exploration")
+            self.assertEqual(os.environ["MAX_TRADES_PER_DAY"], "8")
+            self.assertEqual(os.environ["COOLDOWN_BARS"], "1")
+            self.assertEqual(os.environ["ATR_RISK_PER_TRADE_PCT"], "0.01")
+            self.assertEqual(os.environ["TARGET_POSITION_NOTIONAL_PCT"], "0.25")
             self.assertIn("paper_btc", os.environ["BOT_DATA_DIR"])
         finally:
             os.environ.clear()

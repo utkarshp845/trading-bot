@@ -63,6 +63,14 @@ python -m bot.profile_runner paper trade btc
 python -m bot.profile_runner live trade btc
 ```
 
+Before relying on a schedule, verify both the paper account and market-data feed (this never places an order):
+
+```bash
+python -m bot.profile_runner paper connectivity btc
+```
+
+The BTC paper profile is an exploration profile: it permits up to 8 entries per day with a one-bar cooldown and slightly looser ADX/volume gates, while reducing target notional to 25% and ATR risk sizing to 1%. Live BTC settings are unchanged. The EC2 paper schedule refreshes its monitor hourly and its historical research report daily.
+
 ## Run
 
 ```bash

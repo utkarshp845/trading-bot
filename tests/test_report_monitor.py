@@ -4,10 +4,34 @@ import unittest
 
 import pandas as pd
 
-from bot.report_monitor import _latest_metric_lines, _near_miss_rows, _reason_count_sections
+from bot.report_monitor import _latest_metric_lines, _near_miss_rows, _reason_count_sections, _runtime_health
 
 
 class ReportMonitorTests(unittest.TestCase):
+    def test_runtime_health_ignores_validation_samples_and_flags_stale_cycles(self):
+        now = datetime.now(timezone.utc)
+        runs = pd.DataFrame(
+            [
+                {"ts": pd.Timestamp(now - timedelta(minutes=30)), "note": ""},
+                {"ts": pd.Timestamp(now), "note": "runtime_validation_sample"},
+            ]
+        )
+
+        health = _runtime_health(runs, max_age_minutes=15, now=now)
+
+        self.assertFalse(health["healthy"])
+        self.assertEqual(health["status"], "stale")
+        self.assertAlmostEqual(health["age_minutes"], 30.0)
+
+    def test_runtime_health_flags_validation_only_database(self):
+        now = datetime.now(timezone.utc)
+        runs = pd.DataFrame([{"ts": pd.Timestamp(now), "note": "runtime_validation_sample"}])
+
+        health = _runtime_health(runs, now=now)
+
+        self.assertFalse(health["healthy"])
+        self.assertEqual(health["status"], "validation_only")
+
     def test_reason_count_sections_counts_24h_and_7d_rejections(self):
         now = datetime.now(timezone.utc)
         runs = pd.DataFrame(
@@ -57,6 +81,16 @@ class ReportMonitorTests(unittest.TestCase):
                     "reasons": "regime_filter_failed;pullback_depth_out_of_range;momentum_filter_failed;trend_up_no_entry",
                     "note": "",
                     "metrics_json": json.dumps(metrics),
+                },
+                {
+                    "ts": now,
+                    "signal": "HOLD",
+                    "desired_action": "HOLD",
+                    "position_qty": 0.0,
+                    "price": 100.0,
+                    "reasons": "indicators_not_ready",
+                    "note": "runtime_validation_sample",
+                    "metrics_json": "{}",
                 },
             ]
         )

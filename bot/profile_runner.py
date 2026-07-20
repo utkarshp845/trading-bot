@@ -6,7 +6,10 @@ from bot.profile import load_profile
 
 
 def _usage() -> int:
-    print("Usage: python -m bot.profile_runner <paper|live|paper-btc|live-btc> <trade|monitor|research|optimize|validate> [spy|btc]")
+    print(
+        "Usage: python -m bot.profile_runner <paper|live|paper-btc|live-btc> "
+        "<trade|monitor|research|optimize|validate|connectivity> [spy|btc]"
+    )
     return 2
 
 
@@ -47,6 +50,11 @@ def main(argv: list[str] | None = None) -> int:
         from bot.validate_runtime import main as validate_main
 
         return int(validate_main())
+
+    if action == "connectivity":
+        from bot.validate_connectivity import main as connectivity_main
+
+        return int(connectivity_main())
 
     return _usage()
 

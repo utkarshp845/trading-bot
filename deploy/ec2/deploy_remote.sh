@@ -42,6 +42,9 @@ echo "Building trading-bot image in $app_dir"
 echo "Running ${profile} validation for ${market}"
 "$docker_bin" compose run --rm --entrypoint python "$compose_service" -m bot.profile_runner "$profile" validate "$market"
 
+echo "Checking ${profile} broker and market-data connectivity for ${market}"
+"$docker_bin" compose run --rm --entrypoint python "$compose_service" -m bot.profile_runner "$profile" connectivity "$market"
+
 if [[ "$install_cron" == "true" || "$install_cron" == "1" ]]; then
   echo "Installing cron schedule for ${profile}"
   bash deploy/ec2/install_cron.sh "$profile" "$app_dir"
