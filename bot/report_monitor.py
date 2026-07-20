@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -191,12 +192,68 @@ def _latest_metric_lines(latest_run) -> list[str]:
     return [f"- Strategy metrics: {'; '.join(parts)}"]
 
 
+def _runtime_health(
+    runs: pd.DataFrame,
+    max_age_minutes: int = 15,
+    now: datetime | None = None,
+) -> dict:
+    checked_at = pd.Timestamp(now or datetime.now(timezone.utc))
+    if checked_at.tzinfo is None:
+        checked_at = checked_at.tz_localize("UTC")
+    else:
+        checked_at = checked_at.tz_convert("UTC")
+
+    empty_status = "no_real_runs"
+    if runs.empty or "ts" not in runs.columns:
+        return {
+            "healthy": False,
+            "status": empty_status,
+            "latest_real_run_ts": None,
+            "age_minutes": None,
+            "max_age_minutes": max_age_minutes,
+        }
+
+    notes = runs.get("note", pd.Series("", index=runs.index)).fillna("").astype(str)
+    real_runs = runs[~notes.str.contains("runtime_validation_sample", regex=False)]
+    if real_runs.empty:
+        return {
+            "healthy": False,
+            "status": "validation_only",
+            "latest_real_run_ts": None,
+            "age_minutes": None,
+            "max_age_minutes": max_age_minutes,
+        }
+
+    latest_ts = pd.to_datetime(real_runs["ts"], utc=True, errors="coerce").dropna().max()
+    if pd.isna(latest_ts):
+        return {
+            "healthy": False,
+            "status": empty_status,
+            "latest_real_run_ts": None,
+            "age_minutes": None,
+            "max_age_minutes": max_age_minutes,
+        }
+
+    age_minutes = max(0.0, (checked_at - latest_ts).total_seconds() / 60.0)
+    healthy = age_minutes <= max_age_minutes
+    return {
+        "healthy": healthy,
+        "status": "healthy" if healthy else "stale",
+        "latest_real_run_ts": latest_ts,
+        "age_minutes": age_minutes,
+        "max_age_minutes": max_age_minutes,
+    }
+
+
 def _near_miss_rows(runs: pd.DataFrame, limit: int = 10) -> list[dict]:
     if runs.empty:
         return []
 
     near_misses: list[dict] = []
     for row in runs.tail(500).itertuples():
+        note = str(getattr(row, "note", "") or "")
+        if "runtime_validation_sample" in note:
+            continue
         signal = str(getattr(row, "signal", "") or "")
         action = str(getattr(row, "desired_action", "") or "")
         try:
@@ -290,6 +347,10 @@ def main() -> None:
         closed = add_condition_buckets(closed)
 
     latest_run = runs.iloc[-1] if not runs.empty else None
+    runtime_health = _runtime_health(
+        runs,
+        max_age_minutes=max(1, int(os.getenv("HEALTH_MAX_RUN_AGE_MINUTES", "15"))),
+    )
     latest_events = events.tail(20) if not events.empty else pd.DataFrame()
     pending_orders = orders[orders["processed_at"].isna()] if not orders.empty and "processed_at" in orders.columns else pd.DataFrame()
     summary = closed_trade_summary(closed)
@@ -382,6 +443,12 @@ def main() -> None:
         )
         latest_run_lines.extend(_latest_metric_lines(latest_run))
 
+    health_lines = [
+        f"- Status: {'HEALTHY' if runtime_health['healthy'] else 'UNHEALTHY'} ({runtime_health['status']})",
+        f"- Latest real trading cycle: {_fmt_ts(runtime_health['latest_real_run_ts'])}",
+        f"- Cycle age: {_fmt_num(runtime_health['age_minutes'], 1)} minutes (limit {runtime_health['max_age_minutes']})",
+    ]
+
     profit_factor_text = "n/a" if summary["profit_factor"] is None else f"{summary['profit_factor']:.2f}"
     lines = [
         "# Monitor Report",
@@ -391,12 +458,8 @@ def main() -> None:
         "## Latest Run",
     ]
     lines.extend(latest_run_lines if latest_run_lines else ["- No runs recorded yet."])
-    lines.extend(
-        [
-            "",
-            "## Bot State",
-        ]
-    )
+    lines.extend(["", "## Runtime Health", *health_lines])
+    lines.extend(["", "## Bot State"])
     lines.extend(state_lines if state_lines else ["- No state row found yet."])
     lines.extend(
         [
@@ -475,6 +538,7 @@ def main() -> None:
                 "latest_run": None if latest_run is None else latest_run.to_dict(),
                 "state": [] if state.empty else state.to_dict(orient="records"),
                 "positions": [] if positions.empty else positions.to_dict(orient="records"),
+                "runtime_health": runtime_health,
                 "pending_orders": [] if pending_orders.empty else pending_orders.to_dict(orient="records"),
                 "rejection_counts": rejection_counts,
                 "near_misses": near_misses,
